@@ -1,7 +1,7 @@
 use bitdemon::domain::result_slice::ResultSlice;
 use bitdemon::domain::title::Title;
 use bitdemon::lobby::storage::{
-    FileVisibility, PublisherStorageService, StorageFileInfo, StorageServiceError,
+    FileVisibility, PublisherStorageService, StorageFile, StorageFileInfo, StorageServiceError,
 };
 use bitdemon::networking::bd_session::BdSession;
 use log::{info, warn};
@@ -42,6 +42,36 @@ impl PublisherStorageService for DwPublisherStorageService {
         fs::read(full_file_path).map_err(|_| {
             warn!("Requested publisher file could not be found",);
             StorageServiceError::StorageFileNotFoundError
+        })
+    }
+
+    fn get_publisher_file_data_by_id(
+        &self,
+        session: &BdSession,
+        file_id: u64,
+    ) -> Result<StorageFile, StorageServiceError> {
+        info!("Requesting publisher file {file_id}");
+
+        let title = session.authentication().unwrap().title;
+        let full_dir_path = format!("storage/publisher/{}", title.to_u32().unwrap());
+
+        let entry = fs::read_dir(full_dir_path)
+            .map_err(|_| StorageServiceError::StorageFileNotFoundError)?
+            .filter_map(|entry| entry.ok())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| Self::file_id(name) == file_id)
+            })
+            .ok_or(StorageServiceError::StorageFileNotFoundError)?;
+
+        let data =
+            fs::read(entry.path()).map_err(|_| StorageServiceError::StorageFileNotFoundError)?;
+
+        Ok(StorageFile {
+            info: Self::map_info_info(title, entry),
+            data,
         })
     }
 
@@ -133,10 +163,21 @@ impl DwPublisherStorageService {
         DwPublisherStorageService {}
     }
 
+    pub fn file_id(filename: &str) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+
+        for byte in filename.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+
+        hash | 0x8000_0000_0000_0000
+    }
+
     fn map_info_info(title: Title, entry: DirEntry) -> StorageFileInfo {
         let metadata = entry.metadata().unwrap();
         StorageFileInfo {
-            id: 0,
+            id: Self::file_id(entry.file_name().to_str().unwrap()),
             filename: entry.file_name().into_string().unwrap(),
             title,
             file_size: metadata.len(),

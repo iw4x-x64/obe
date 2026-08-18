@@ -3,8 +3,8 @@ use crate::auth::authentication::SessionAuthentication;
 use crate::auth::key_store::ThreadSafeBackendPrivateKeyStorage;
 use crate::domain::title::Title;
 use crate::lobby::LobbyHandler;
+use crate::lobby::messaging::MessageRouter;
 use crate::lobby::response::lsg_reply::ConnectionIdResponse;
-use crate::messaging::StreamMode::BitMode;
 use crate::messaging::bd_message::BdMessage;
 use crate::messaging::bd_response::{BdResponse, ResponseCreator};
 use crate::networking::bd_session::BdSession;
@@ -16,11 +16,15 @@ use std::sync::Arc;
 
 pub struct LsgHandler {
     key_store: Arc<ThreadSafeBackendPrivateKeyStorage>,
+    router: Arc<MessageRouter>,
 }
 
 impl LsgHandler {
-    pub fn new(key_store: Arc<ThreadSafeBackendPrivateKeyStorage>) -> LsgHandler {
-        LsgHandler { key_store }
+    pub fn new(
+        key_store: Arc<ThreadSafeBackendPrivateKeyStorage>,
+        router: Arc<MessageRouter>,
+    ) -> LsgHandler {
+        LsgHandler { key_store, router }
     }
 }
 
@@ -45,9 +49,6 @@ impl LobbyHandler for LsgHandler {
         session: &mut BdSession,
         mut message: BdMessage,
     ) -> Result<BdResponse, Box<dyn Error>> {
-        message.reader.set_mode(BitMode);
-        message.reader.read_type_checked_bit()?;
-
         let title_id = message.reader.read_u32()?;
         let title = Title::from_u32(title_id).with_context(|| UnknownTitleSnafu { title_id })?;
         let _iv_seed = message.reader.read_u32()?;
@@ -86,6 +87,8 @@ impl LobbyHandler for LsgHandler {
             session_key: auth_proof.session_key,
             title: auth_proof.title,
         });
+
+        self.router.register(session);
 
         ConnectionIdResponse::new(session.id).to_response()
     }

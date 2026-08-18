@@ -1,6 +1,7 @@
 ﻿#[derive(Debug, Eq, PartialEq, Hash, Copy, Clone, FromPrimitive, ToPrimitive)]
 #[repr(u32)]
 pub enum Title {
+    Iw4 = 2010,
     Iw5 = 18409,
     T5 = 18301,
     T6Xenon = 18395,

@@ -42,6 +42,10 @@ impl BdSession {
         self.stream.get_ref().peer_addr()
     }
 
+    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
+        self.stream.get_ref().try_clone()
+    }
+
     pub fn authentication(&self) -> Option<&SessionAuthentication> {
         self.authentication.as_ref()
     }

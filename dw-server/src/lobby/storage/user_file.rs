@@ -1,7 +1,7 @@
 use crate::lobby::storage::db::{STORAGE_DB, from_file_visibility, from_title, to_file_visibility};
 use bitdemon::domain::result_slice::ResultSlice;
 use bitdemon::lobby::storage::{
-    FileVisibility, StorageFileInfo, StorageServiceError, UserStorageService,
+    FileVisibility, StorageFile, StorageFileInfo, StorageServiceError, UserStorageService,
 };
 use bitdemon::networking::bd_session::BdSession;
 use chrono::Utc;
@@ -18,19 +18,38 @@ impl UserStorageService for DwUserStorageService {
         session: &BdSession,
         owner_id: u64,
         file_id: u64,
-    ) -> Result<Vec<u8>, StorageServiceError> {
+    ) -> Result<StorageFile, StorageServiceError> {
         info!("Requesting file file_id={file_id} owner_id={owner_id}");
 
         if session.authentication().unwrap().user_id != owner_id {
             return Err(StorageServiceError::PermissionDeniedError);
         }
 
+        let title = session.authentication().unwrap().title;
+
         let res = STORAGE_DB.with_borrow(|db| {
             db.query_row(
-                "SELECT data FROM user_file u
-                     WHERE u.id = ?1 AND u.owner_id = ?2",
+                "SELECT filename, created_at, modified_at, visibility, data
+                     FROM user_file
+                     WHERE id = ?1 AND owner_id = ?2",
                 (file_id, owner_id),
-                |row| row.get(0),
+                |row| {
+                    let data: Vec<u8> = row.get(4)?;
+
+                    Ok(StorageFile {
+                        info: StorageFileInfo {
+                            id: file_id,
+                            filename: row.get(0)?,
+                            title,
+                            file_size: data.len() as u64,
+                            created: row.get(1)?,
+                            modified: row.get(2)?,
+                            visibility: to_file_visibility(row.get(3)?),
+                            owner_id,
+                        },
+                        data,
+                    })
+                },
             )
         });
 
@@ -73,25 +92,32 @@ impl UserStorageService for DwUserStorageService {
 
     fn list_storage_files(
         &self,
-        _session: &BdSession,
-        _owner_id: u64,
-        _min_date_time: i64,
-        _page_offset: usize,
-        _page_size: usize,
+        session: &BdSession,
+        owner_id: u64,
+        min_date_time: i64,
+        item_offset: usize,
+        item_count: usize,
     ) -> Result<ResultSlice<StorageFileInfo>, StorageServiceError> {
-        todo!()
+        self.list(session, owner_id, min_date_time, item_offset, item_count, None)
     }
 
     fn filter_storage_files(
         &self,
-        _session: &BdSession,
-        _owner_id: u64,
-        _min_date_time: i64,
-        _item_offset: usize,
-        _item_count: usize,
-        _filter: String,
+        session: &BdSession,
+        owner_id: u64,
+        min_date_time: i64,
+        item_offset: usize,
+        item_count: usize,
+        filter: String,
     ) -> Result<ResultSlice<StorageFileInfo>, StorageServiceError> {
-        todo!()
+        self.list(
+            session,
+            owner_id,
+            min_date_time,
+            item_offset,
+            item_count,
+            Some(filter),
+        )
     }
 
     fn create_storage_file(
@@ -271,5 +297,77 @@ impl UserStorageService for DwUserStorageService {
 impl DwUserStorageService {
     pub fn new() -> DwUserStorageService {
         DwUserStorageService {}
+    }
+
+    fn list(
+        &self,
+        session: &BdSession,
+        owner_id: u64,
+        min_date_time: i64,
+        item_offset: usize,
+        item_count: usize,
+        filter: Option<String>,
+    ) -> Result<ResultSlice<StorageFileInfo>, StorageServiceError> {
+        info!(
+            "Listing files owner_id={owner_id} min_date_time={min_date_time} \
+             item_offset={item_offset} item_count={item_count} filter={filter:?}"
+        );
+
+        let user_id = session.authentication().unwrap().user_id;
+        let title = session.authentication().unwrap().title;
+        let title_num = from_title(title);
+
+        let visible: u8 = if user_id == owner_id {
+            u8::MAX
+        } else {
+            from_file_visibility(FileVisibility::VisiblePublic)
+        };
+
+        let prefix = filter.map(|f| format!("{f}%")).unwrap_or_else(|| "%".into());
+
+        let files = STORAGE_DB.with_borrow(|db| -> rusqlite::Result<Vec<StorageFileInfo>> {
+            let mut statement = db.prepare(
+                "SELECT id, filename, LENGTH(data), created_at, modified_at, visibility
+                     FROM user_file
+                     WHERE owner_id = ?1 AND title = ?2 AND created_at >= ?3
+                       AND filename LIKE ?4 AND (visibility = ?5 OR ?5 = 255)
+                     ORDER BY id
+                     LIMIT ?6 OFFSET ?7",
+            )?;
+
+            let rows = statement.query_map(
+                (
+                    owner_id,
+                    title_num,
+                    min_date_time,
+                    prefix.as_str(),
+                    visible,
+                    item_count as i64,
+                    item_offset as i64,
+                ),
+                |row| {
+                    Ok(StorageFileInfo {
+                        id: row.get(0)?,
+                        filename: row.get(1)?,
+                        title,
+                        file_size: row.get(2)?,
+                        created: row.get(3)?,
+                        modified: row.get(4)?,
+                        visibility: to_file_visibility(row.get(5)?),
+                        owner_id,
+                    })
+                },
+            )?;
+
+            rows.collect()
+        });
+
+        match files {
+            Ok(files) => Ok(ResultSlice::new(files, item_offset)),
+            Err(e) => {
+                warn!("Failed to list files: {e}");
+                Err(StorageServiceError::StorageFileNotFoundError)
+            }
+        }
     }
 }

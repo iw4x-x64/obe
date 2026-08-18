@@ -266,6 +266,20 @@ impl BdReader {
         Ok(self.cursor.get_ref().len() - self.cursor.position() as usize)
     }
 
+    pub fn remaining_bits(&self) -> Result<usize, Box<dyn Error>> {
+        ensure!(
+            self.mode == StreamMode::BitMode,
+            ModeSnafu {
+                actual_mode: self.mode,
+                expected_mode: StreamMode::BitMode
+            }
+        );
+
+        let whole = self.cursor.get_ref().len() - self.cursor.position() as usize;
+
+        Ok(whole * 8 + (8 - self.bit_offset))
+    }
+
     fn read_array_num_elements(&mut self) -> Result<usize, Box<dyn Error>> {
         // Always type checked
         let total_size_type = self.read_data_type()?;
@@ -529,14 +543,6 @@ impl BdReader {
     }
 
     pub fn read_str(&mut self) -> Result<String, Box<dyn Error>> {
-        ensure!(
-            self.mode == StreamMode::ByteMode,
-            ModeSnafu {
-                actual_mode: self.mode,
-                expected_mode: StreamMode::ByteMode
-            }
-        );
-
         if self.type_checked {
             let actual_type = self.read_data_type()?;
             ensure!(
@@ -546,6 +552,23 @@ impl BdReader {
                     expected_type: BufferDataType::no_array(BdDataType::SignedChar8StringType)
                 }
             );
+        }
+
+        if self.mode == StreamMode::BitMode {
+            let mut buf = Vec::new();
+
+            loop {
+                let mut byte = [0u8];
+                self.read_bits(&mut byte, 8)?;
+
+                if byte[0] == 0 {
+                    break;
+                }
+
+                buf.push(byte[0]);
+            }
+
+            return Ok(String::from_utf8(buf)?);
         }
 
         let mut buf = Vec::new();
@@ -885,14 +908,6 @@ impl BdReader {
     }
 
     pub fn read_blob(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
-        ensure!(
-            self.mode == StreamMode::ByteMode,
-            ModeSnafu {
-                actual_mode: self.mode,
-                expected_mode: StreamMode::ByteMode
-            }
-        );
-
         if self.type_checked {
             let actual_type = self.read_data_type()?;
             ensure!(
@@ -906,6 +921,13 @@ impl BdReader {
 
         let blob_size = self.read_u32()? as usize;
         let mut blob = vec![0; blob_size];
+
+        if self.mode == StreamMode::BitMode {
+            self.read_bits(&mut blob, blob_size * 8)?;
+
+            return Ok(blob);
+        }
+
         ensure!(
             self.cursor.read(&mut blob[0..blob_size])? == blob_size,
             UnexpectedEndOfMessageSnafu {}

@@ -30,31 +30,42 @@ impl BdResponse {
     }
 
     pub fn send(&mut self, session: &mut BdSession) -> Result<(), Box<dyn Error>> {
-        if self.should_encrypt && session.authentication().is_some() {
+        let key = session
+            .authentication()
+            .map(|a| a.session_key)
+            .filter(|_| self.should_encrypt);
+
+        self.send_to(session, key.as_ref())
+    }
+
+    pub fn send_to<W: Write>(
+        &mut self,
+        writer: &mut W,
+        key: Option<&[u8; 24]>,
+    ) -> Result<(), Box<dyn Error>> {
+        log::trace!("Response ({} bytes): {:02x?}", self.data.len(), self.data);
+
+        if let Some(key) = key {
             let seed = generate_iv_seed();
             let iv = generate_iv_from_seed(seed);
 
             self.data
                 .splice(0..0, RESPONSE_SIGNATURE.to_le_bytes().iter().cloned());
-            encrypt_buffer_in_place(
-                &mut self.data,
-                &session.authentication().unwrap().session_key,
-                &iv,
-            );
+            encrypt_buffer_in_place(&mut self.data, key, &iv);
 
             // Written length minus length field itself
             // 1 byte (encrypted) + 4 byte (seed)
             let message_length = self.data.len() + 5;
-            session.write_u32::<LittleEndian>(message_length as u32)?;
-            session.write_u8(1u8)?; // Encrypted
-            session.write_u32::<LittleEndian>(seed)?;
-            session.write_all(self.data.as_slice())?;
+            writer.write_u32::<LittleEndian>(message_length as u32)?;
+            writer.write_u8(1u8)?; // Encrypted
+            writer.write_u32::<LittleEndian>(seed)?;
+            writer.write_all(self.data.as_slice())?;
         } else {
             // Written length minus length field itself
             let message_length = self.data.len() + 1;
-            session.write_u32::<LittleEndian>(message_length as u32)?;
-            session.write_u8(0u8)?; // Encrypted
-            session.write_all(self.data.as_slice())?;
+            writer.write_u32::<LittleEndian>(message_length as u32)?;
+            writer.write_u8(0u8)?; // Encrypted
+            writer.write_all(self.data.as_slice())?;
         }
 
         Ok(())

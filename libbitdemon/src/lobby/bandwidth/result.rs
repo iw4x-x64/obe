@@ -25,3 +25,35 @@ impl LsgServiceTaskReply for BandwidthTestRejected {
         Ok(())
     }
 }
+
+pub struct BandwidthTestAccepted {
+    pub packet_size: u32,
+    pub packet_count: u32,
+    pub duration_ms: u32,
+    pub port: u16,
+    pub address: u32,
+    pub token: [u8; 8],
+}
+
+impl LsgServiceTaskReply for BandwidthTestAccepted {
+    fn write_task_reply_data(&self, mut writer: BdWriter) -> Result<(), Box<dyn Error>> {
+        writer.write_bool(false)?;
+
+        writer.write_u32(self.packet_size)?;
+        writer.write_u32(self.packet_count)?;
+        writer.write_u32(0)?;
+        writer.write_u32(self.duration_ms)?;
+        writer.write_u32(0)?;
+        writer.write_u32(0)?;
+        writer.write_u32(0)?;
+
+        writer.write_u16(self.port)?;
+        writer.write_u32(self.address)?;
+
+        for b in self.token {
+            writer.write_u8(b)?;
+        }
+
+        Ok(())
+    }
+}

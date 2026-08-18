@@ -13,6 +13,8 @@ use std::{io, thread};
 
 const MAX_MESSAGE_SIZE: u32 = 0x4000000;
 
+const BUFFER_SPACE_HEADER: u32 = 180;
+
 #[derive(Debug, Snafu)]
 enum BdSocketError {
     #[snafu(display("Message was too large (size={msg_size}, max={MAX_MESSAGE_SIZE})"))]
@@ -104,7 +106,28 @@ impl BdSocket {
         })
     }
 
+    fn sniff_connection(session: &mut BdSession) {
+        let mut all: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+
+        loop {
+            match session.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    all.extend_from_slice(&buf[..n]);
+                    info!("Sniffed {n} bytes (total {})", all.len());
+                    info!("  {:02x?}", &all[..all.len().min(512)]);
+                }
+            }
+        }
+    }
+
     fn handle_connection(session: &mut BdSession, message_handler: &dyn BdMessageHandler) {
+        if std::env::var("IW4X_SNIFF").is_ok() {
+            Self::sniff_connection(session);
+            return;
+        }
+
         let connection_loop = |session: &mut BdSession| -> Result<(), Box<dyn Error>> {
             loop {
                 let mut b: [u8; 4] = [0; 4];
@@ -121,7 +144,7 @@ impl BdSocket {
                         debug!("Ping");
                         session.write_u32::<LittleEndian>(0)?;
                     }
-                    200 => {
+                    BUFFER_SPACE_HEADER => {
                         let available_buffer_size = session.read_u32::<LittleEndian>()?;
                         debug!("Buffer available: {available_buffer_size}");
                     }

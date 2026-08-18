@@ -13,7 +13,7 @@ pub struct TaskReply {
     error_code: BdErrorCode,
     operation_id: u8,
     results: Vec<Box<dyn BdSerialize>>,
-    total_num_results: Option<u32>,
+    counted: bool,
 }
 
 thread_local! {
@@ -30,7 +30,7 @@ impl TaskReply {
             error_code,
             operation_id: operation_id.to_u8().unwrap(),
             results: Vec::new(),
-            total_num_results: None,
+            counted: false,
         }
     }
 
@@ -43,7 +43,7 @@ impl TaskReply {
             error_code: BdErrorCode::NoError,
             operation_id: operation_id.to_u8().unwrap(),
             results,
-            total_num_results: None,
+            counted: true,
         }
     }
 
@@ -51,18 +51,25 @@ impl TaskReply {
         operation_id: T,
         results: ResultSlice<Box<dyn BdSerialize>>,
     ) -> TaskReply {
-        let total_count = results.total_count();
-        let total_num_results = if total_count != results.data().len() {
-            Some(total_count as u32)
-        } else {
-            None
-        };
         TaskReply {
             transaction_id: Self::next_transaction_id(),
             error_code: BdErrorCode::NoError,
             operation_id: operation_id.to_u8().unwrap(),
             results: results.into_data(),
-            total_num_results,
+            counted: true,
+        }
+    }
+
+    pub fn with_single_result<T: ToPrimitive>(
+        operation_id: T,
+        result: Box<dyn BdSerialize>,
+    ) -> TaskReply {
+        TaskReply {
+            transaction_id: Self::next_transaction_id(),
+            error_code: BdErrorCode::NoError,
+            operation_id: operation_id.to_u8().unwrap(),
+            results: vec![result],
+            counted: false,
         }
     }
 
@@ -86,21 +93,23 @@ impl ResponseCreator for TaskReply {
 
             writer.write_u8(BdMessageType::LobbyServiceTaskReply.to_u8().unwrap())?;
 
+            writer.set_mode(StreamMode::BitMode);
             writer.set_type_checked(true);
+            writer.write_type_checked_bit()?;
 
             writer.write_u64(self.transaction_id)?;
             writer.write_u32(self.error_code.to_u32().unwrap())?;
             writer.write_u8(self.operation_id)?;
 
-            // numResults
-            writer.write_u32(self.results.len() as u32)?;
-
-            // totalNumResults
-            writer.write_u32(self.total_num_results.unwrap_or(self.results.len() as u32))?;
+            if self.counted {
+                writer.write_u32(self.results.len() as u32)?;
+            }
 
             for result in &self.results {
                 result.serialize(&mut writer)?;
             }
+
+            writer.flush()?;
         }
 
         Ok(BdResponse::encrypted_if_available(data))

@@ -14,23 +14,29 @@ use crate::lobby::rich_presence::create_rich_presence_handler;
 use crate::lobby::storage::create_storage_handler;
 use axum::Router;
 use bitdemon::lobby::LobbyServiceId::{
-    Anticheat, BandwidthTest, Counter, Dml, EventLog, Group, KeyArchive, League, Profile,
-    RichPresence, Storage, TitleUtilities, Twitch, VoteRank, Youtube,
+    Anticheat, BandwidthTest, Counter, Dml, EventLog, Group, KeyArchive, League, MatchMaking,
+    Messaging, Performance, Profile, RichPresence, Storage, TitleUtilities, Twitch, VoteRank, Youtube,
 };
 use bitdemon::lobby::anti_cheat::AntiCheatHandler;
-use bitdemon::lobby::bandwidth::BandwidthHandler;
+use bitdemon::lobby::bandwidth::{BandwidthHandler, BandwidthTestServer};
 use bitdemon::lobby::dml::DmlHandler;
 use bitdemon::lobby::event_log::EventLogHandler;
 use bitdemon::lobby::key_archive::KeyArchiveHandler;
 use bitdemon::lobby::league::LeagueHandler;
+use bitdemon::lobby::matchmaking::{MatchMakingHandler, SessionRegistry};
+use bitdemon::lobby::messaging::MessagingHandler;
+use bitdemon::lobby::performance::PerformanceHandler;
 use bitdemon::lobby::title_utilities::TitleUtilitiesHandler;
 use bitdemon::lobby::twitch::TwitchHandler;
 use bitdemon::lobby::vote_rank::VoteRankHandler;
 use bitdemon::lobby::youtube::YoutubeHandler;
 use bitdemon::lobby::{LobbyServer, LobbyServiceId, ThreadSafeLobbyHandler};
 use bitdemon::networking::session_manager::SessionManager;
+use ::log::error;
 use std::cell::Cell;
 use std::sync::Arc;
+
+const BANDWIDTH_TEST_PORT: u16 = 3076;
 
 pub fn configure_lobby_server(
     lobby_server: &LobbyServer,
@@ -40,7 +46,15 @@ pub fn configure_lobby_server(
     let mut configurer = DwServerConfigurer::new(lobby_server);
 
     configurer.direct_config(Anticheat, Arc::new(AntiCheatHandler::new()));
-    configurer.direct_config(BandwidthTest, Arc::new(BandwidthHandler::new()));
+    match BandwidthTestServer::bind(BANDWIDTH_TEST_PORT) {
+        Ok(endpoint) => {
+            let endpoint = Arc::new(endpoint);
+            endpoint.clone().run();
+
+            configurer.direct_config(BandwidthTest, Arc::new(BandwidthHandler::new(endpoint)));
+        }
+        Err(e) => error!("No bandwidth test endpoint ({e}); tests will be refused"),
+    }
 
     configurer.full_config(create_content_streaming_handler(config));
 
@@ -50,6 +64,19 @@ pub fn configure_lobby_server(
     configurer.direct_config(Group, create_group_handler(session_manager.clone()));
     configurer.direct_config(KeyArchive, Arc::new(KeyArchiveHandler::new()));
     configurer.direct_config(League, Arc::new(LeagueHandler::new()));
+    configurer.direct_config(
+        MatchMaking,
+        Arc::new(MatchMakingHandler::new(Arc::new(SessionRegistry::new()))),
+    );
+    let router = lobby_server.message_router();
+
+    {
+        let router = router.clone();
+        session_manager.on_session_unregistered(move |s| router.unregister(s));
+    }
+
+    configurer.direct_config(Messaging, Arc::new(MessagingHandler::new(router)));
+    configurer.direct_config(Performance, Arc::new(PerformanceHandler::new()));
     configurer.direct_config(Profile, create_profile_handler());
     configurer.direct_config(RichPresence, create_rich_presence_handler(session_manager));
     configurer.direct_config(Storage, create_storage_handler());
@@ -85,7 +112,9 @@ impl ConfiguredEnvironment {
         self
     }
 
-    pub fn configure_lobby_server(self, lobby_server: &LobbyServer) {
+    const BANDWIDTH_TEST_PORT: u16 = 3076;
+
+pub fn configure_lobby_server(self, lobby_server: &LobbyServer) {
         lobby_server.add_service(self.service_id, self.handler);
     }
 

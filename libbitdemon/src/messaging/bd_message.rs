@@ -19,7 +19,7 @@ enum BdMessageError {
 impl BdMessage {
     pub fn new(session: &BdSession, mut buf: Vec<u8>) -> Result<Self, Box<dyn Error>> {
         let encrypted = buf.first().unwrap();
-        if *encrypted > 0 {
+        if *encrypted == 1 {
             ensure!(session.authentication().is_some(), NoSessionKeySnafu {});
             let seed = u32::from_le_bytes(buf[1..5].try_into().unwrap());
 
@@ -47,13 +47,17 @@ impl BdMessage {
                 }
             );
 
-            Ok(BdMessage {
-                reader: BdReader::new(Vec::from(&buf[9..buf.len()])),
-            })
+            Ok(BdMessage::traced(&buf[9..buf.len()]))
         } else {
-            Ok(BdMessage {
-                reader: BdReader::new(Vec::from(&buf[1..buf.len()])),
-            })
+            Ok(BdMessage::traced(&buf[1..buf.len()]))
+        }
+    }
+
+    fn traced(payload: &[u8]) -> Self {
+        log::trace!("Message ({} bytes): {payload:02x?}", payload.len());
+
+        BdMessage {
+            reader: BdReader::new(Vec::from(payload)),
         }
     }
 }

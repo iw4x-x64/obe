@@ -1,6 +1,6 @@
 use crate::lobby::response::BdMessageType;
 use crate::lobby::response::BdMessageType::LsgServiceConnectionId;
-use crate::messaging::StreamMode::ByteMode;
+use crate::messaging::StreamMode::{BitMode, ByteMode};
 use crate::messaging::bd_response::{BdResponse, ResponseCreator};
 use crate::messaging::bd_writer::BdWriter;
 use num_traits::ToPrimitive;
@@ -55,9 +55,13 @@ impl ResponseCreator for ConnectionIdResponse {
 
             writer.write_u8(LsgServiceConnectionId.to_u8().unwrap())?;
 
+            writer.set_mode(BitMode);
             writer.set_type_checked(true);
 
+            writer.write_type_checked_bit()?;
+
             writer.write_u64(self.connection_id)?;
+            writer.flush()?;
         }
 
         Ok(BdResponse::encrypted_if_available(data))

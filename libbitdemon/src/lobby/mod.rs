@@ -7,6 +7,9 @@ pub mod event_log;
 pub mod group;
 pub mod key_archive;
 pub mod league;
+pub mod matchmaking;
+pub mod messaging;
+pub mod performance;
 mod lsg;
 pub mod profile;
 mod response;
@@ -19,7 +22,9 @@ pub mod youtube;
 
 use crate::auth::key_store::ThreadSafeBackendPrivateKeyStorage;
 use crate::lobby::LobbyServiceId::LobbyService;
+use crate::messaging::StreamMode::BitMode;
 use crate::lobby::lsg::LsgHandler;
+use crate::lobby::messaging::MessageRouter;
 use crate::lobby::response::task_reply::TaskReply;
 use crate::messaging::BdErrorCode::{AccessDenied, ServiceNotAvailable};
 use crate::messaging::bd_message::BdMessage;
@@ -39,6 +44,7 @@ use std::sync::{Arc, RwLock};
 pub enum LobbyServiceId {
     Teams = 3,
     Stats = 4,
+    MatchMaking = 5,
     Messaging = 6,
     LobbyService = 7,
     Profile = 8,
@@ -47,6 +53,7 @@ pub enum LobbyServiceId {
     Messaging2 = 11,
     TitleUtilities = 12,
     KeyArchive = 15,
+    Performance = 17,
     BandwidthTest = 18,
     Stats2 = 19,
     Matchmaking = 21,
@@ -198,6 +205,12 @@ pub enum LobbyServiceId {
 
 pub type ThreadSafeLobbyHandler = dyn LobbyHandler + Sync + Send;
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum Framing {
+    BitBuffer,
+    Bytes,
+}
+
 pub trait LobbyHandler {
     fn handle_message(
         &self,
@@ -208,21 +221,36 @@ pub trait LobbyHandler {
     fn requires_authentication(&self) -> bool {
         true
     }
+
+    fn framing(&self) -> Framing {
+        Framing::BitBuffer
+    }
 }
 
 pub struct LobbyServer {
     lobby_handlers: RwLock<HashMap<LobbyServiceId, Arc<ThreadSafeLobbyHandler>>>,
+    message_router: Arc<MessageRouter>,
 }
 
 impl LobbyServer {
     pub fn new(key_store: Arc<ThreadSafeBackendPrivateKeyStorage>) -> Self {
+        let message_router = Arc::new(MessageRouter::new());
+
         let lobby_server = LobbyServer {
             lobby_handlers: RwLock::new(HashMap::new()),
+            message_router: message_router.clone(),
         };
 
-        lobby_server.add_service(LobbyService, Arc::new(LsgHandler::new(key_store)));
+        lobby_server.add_service(
+            LobbyService,
+            Arc::new(LsgHandler::new(key_store, message_router)),
+        );
 
         lobby_server
+    }
+
+    pub fn message_router(&self) -> Arc<MessageRouter> {
+        self.message_router.clone()
     }
 
     pub fn add_service(&self, service_id: LobbyServiceId, handler: Arc<ThreadSafeLobbyHandler>) {
@@ -255,6 +283,11 @@ impl BdMessageHandler for LobbyServer {
         let handlers = self.lobby_handlers.read().unwrap();
         let maybe_handler = handlers.get(&service_id);
 
+        if maybe_handler.map(|h| h.framing()) != Some(Framing::Bytes) {
+            message.reader.set_mode(BitMode);
+            message.reader.read_type_checked_bit()?;
+        }
+
         match maybe_handler {
             Some(handler) => {
                 if handler.requires_authentication() && session.authentication().is_none() {
@@ -265,7 +298,6 @@ impl BdMessageHandler for LobbyServer {
                         .to_response()?
                         .send(session)?;
                 } else {
-                    message.reader.set_type_checked(true);
                     let mut response = handler.handle_message(session, message)?;
                     response.send(session)?;
                 }

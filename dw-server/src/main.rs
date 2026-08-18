@@ -1,7 +1,10 @@
+mod auth;
 mod config;
 mod lobby;
 mod log;
+mod social;
 
+use crate::auth::{AuthState, handle_auth};
 use crate::config::DwServerConfig;
 use crate::lobby::configure_lobby_server;
 use crate::log::{initialize_log, log_session_id};
@@ -11,6 +14,8 @@ use bitdemon::auth::key_store::InMemoryKeyStore;
 use bitdemon::lobby::LobbyServer;
 use bitdemon::networking::bd_socket::BdSocket;
 use bitdemon::networking::session_manager::SessionManager;
+use axum::Router;
+use axum::routing::post;
 use std::process::exit;
 use std::sync::Arc;
 use tokio::fs::read_to_string;
@@ -53,6 +58,16 @@ async fn main() {
     let lobby_server = Arc::new(LobbyServer::new(key_store.clone()));
 
     let lobby_router = configure_lobby_server(&lobby_server, lobby_session_manager, &config);
+
+    let lobby_router = lobby_router.merge(
+        Router::new()
+            .route("/auth/", post(handle_auth))
+            .with_state(AuthState {
+                key_store: key_store.clone(),
+            }),
+    );
+
+    let lobby_router = lobby_router.merge(crate::social::router());
 
     let auth_join = auth_socket.run_async(auth_server);
     let lobby_join = lobby_socket.run_async(lobby_server);

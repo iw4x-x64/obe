@@ -11,7 +11,7 @@ use crate::messaging::bd_message::BdMessage;
 use crate::messaging::bd_reader::BdReader;
 use crate::messaging::bd_response::{BdResponse, ResponseCreator};
 use crate::networking::bd_session::BdSession;
-use log::warn;
+use log::{trace, warn};
 use num_traits::FromPrimitive;
 use std::error::Error;
 use std::sync::Arc;
@@ -24,21 +24,11 @@ pub struct StorageHandler {
 #[derive(Debug, Eq, PartialEq, Hash, Copy, Clone, FromPrimitive, ToPrimitive)]
 #[repr(u8)]
 enum StorageTaskId {
-    // UploadFileAndDeleteMail
-    // GetFilesByID
-    UploadFile = 1,
-    RemoveFile = 2,
-    GetFile = 3,
-    GetFileById = 4,
-    ListFilesByOwner = 5,
-    ListAllPublisherFiles = 6,
-    GetPublisherFile = 7,
-    UpdateFile = 8,
-
-    // 9 = ?
-    RemoveFile2 = 11,
-    GetFile2 = 12,
-    ListFilesByOwner2 = 13,
+    CreateFile = 1,
+    UpdateFileById = 2,
+    GetFileById = 5,
+    ListFilesByOwner = 7,
+    ListPublisherFiles = 8,
 }
 
 impl LobbyHandler for StorageHandler {
@@ -48,34 +38,28 @@ impl LobbyHandler for StorageHandler {
         mut message: BdMessage,
     ) -> Result<BdResponse, Box<dyn Error>> {
         let task_id_value = message.reader.read_u8()?;
+
+        let unrecovered = message.reader.read_u8()?;
+        if unrecovered != 0 {
+            trace!("Storage request leading byte is {unrecovered}, not the usual 0");
+        }
+
         let maybe_task_id = StorageTaskId::from_u8(task_id_value);
         if maybe_task_id.is_none() {
-            warn!("Client called unknown task {task_id_value}");
-            return TaskReply::with_only_error_code(BdErrorCode::NoError, task_id_value)
+            warn!("Client called unknown storage task {task_id_value}");
+            return TaskReply::with_only_error_code(BdErrorCode::ServiceNotAvailable, task_id_value)
                 .to_response();
         }
-        let task_id = maybe_task_id.unwrap();
 
-        match task_id {
-            StorageTaskId::UploadFile => self.upload_file(session, &mut message.reader),
-            StorageTaskId::RemoveFile => self.remove_file(session, &mut message.reader),
-            StorageTaskId::GetFile => self.get_file(session, &mut message.reader),
+        match maybe_task_id.unwrap() {
+            StorageTaskId::CreateFile => self.create_file(session, &mut message.reader),
+            StorageTaskId::UpdateFileById => self.update_file_by_id(session, &mut message.reader),
             StorageTaskId::GetFileById => self.get_file_by_id(session, &mut message.reader),
             StorageTaskId::ListFilesByOwner => {
                 self.list_files_by_owner(session, &mut message.reader)
             }
-            StorageTaskId::ListAllPublisherFiles => {
-                self.list_all_publisher_files(session, &mut message.reader)
-            }
-            StorageTaskId::GetPublisherFile => {
-                self.get_publisher_file(session, &mut message.reader)
-            }
-            StorageTaskId::UpdateFile => self.update_file(session, &mut message.reader),
-            StorageTaskId::RemoveFile2
-            | StorageTaskId::GetFile2
-            | StorageTaskId::ListFilesByOwner2 => {
-                warn!("Client called unimplemented task {task_id:?}");
-                Ok(TaskReply::with_only_error_code(BdErrorCode::NoError, task_id).to_response()?)
+            StorageTaskId::ListPublisherFiles => {
+                self.list_publisher_files(session, &mut message.reader)
             }
         }
     }
@@ -92,80 +76,73 @@ impl StorageHandler {
         }
     }
 
-    fn upload_file(
+    fn create_file(
         &self,
         session: &mut BdSession,
         reader: &mut BdReader,
     ) -> Result<BdResponse, Box<dyn Error>> {
+        let first_flag = reader.read_bool()?;
         let filename = reader.read_str()?;
-        let is_public = reader.read_bool()?;
+        let second_flag = reader.read_bool()?;
         let file_data = reader.read_blob()?;
 
-        let mut owner_id = session.authentication().unwrap().user_id;
-        if reader.next_is_u64().unwrap_or(false) {
-            owner_id = reader.read_u64()?;
-        }
+        trace!(
+            "Create file {filename}, {} bytes, flags {first_flag}/{second_flag}",
+            file_data.len()
+        );
 
-        let visibility = if is_public {
-            FileVisibility::VisiblePublic
-        } else {
-            FileVisibility::VisiblePrivate
-        };
+        let owner_id = session.authentication().unwrap().user_id;
 
-        let result = self
-            .storage_service
-            .create_storage_file(session, owner_id, filename, visibility, file_data);
+        let result = self.storage_service.create_storage_file(
+            session,
+            owner_id,
+            filename,
+            FileVisibility::VisiblePrivate,
+            file_data,
+        );
 
         match result {
-            Ok(info) => Ok(TaskReply::with_results(
-                StorageTaskId::UploadFile,
-                vec![Box::from(info)],
+            Ok(info) => Ok(TaskReply::with_single_result(
+                StorageTaskId::CreateFile,
+                Box::from(info),
             )
             .to_response()?),
             Err(error) => Ok(TaskReply::with_only_error_code(
                 error.into(),
-                StorageTaskId::UploadFile,
+                StorageTaskId::CreateFile,
             )
             .to_response()?),
         }
     }
 
-    fn remove_file(
+    fn update_file_by_id(
         &self,
         session: &mut BdSession,
         reader: &mut BdReader,
     ) -> Result<BdResponse, Box<dyn Error>> {
-        let filename = reader.read_str()?;
+        let file_id = reader.read_u64()?;
+        let file_data = reader.read_blob()?;
 
-        let mut owner_id = session.authentication().unwrap().user_id;
-        if reader.next_is_u64().unwrap_or(false) {
-            owner_id = reader.read_u64()?;
+        trace!("Update file {file_id}, {} bytes", file_data.len());
+
+        let owner_id = session.authentication().unwrap().user_id;
+
+        let result =
+            self.storage_service
+                .update_storage_file_data(session, owner_id, file_id, file_data);
+
+        match result {
+            Ok(_) => Ok(TaskReply::with_only_error_code(
+                BdErrorCode::NoError,
+                StorageTaskId::UpdateFileById,
+            )
+            .to_response()?),
+            Err(error) => Ok(TaskReply::with_only_error_code(
+                error.into(),
+                StorageTaskId::UpdateFileById,
+            )
+            .to_response()?),
         }
-
-        let result = self
-            .storage_service
-            .remove_storage_file(session, owner_id, filename);
-
-        self.answer_for_no_return_value(StorageTaskId::RemoveFile, result)
-    }
-
-    fn get_file(
-        &self,
-        session: &mut BdSession,
-        reader: &mut BdReader,
-    ) -> Result<BdResponse, Box<dyn Error>> {
-        let filename = reader.read_str()?;
-        let mut owner_id = reader.read_u64()?;
-
-        if owner_id == 0 {
-            owner_id = session.authentication().unwrap().user_id;
-        }
-
-        let result = self
-            .storage_service
-            .get_storage_file_data_by_name(session, owner_id, filename);
-
-        self.answer_for_file_data(StorageTaskId::GetFile, result)
     }
 
     fn get_file_by_id(
@@ -175,13 +152,32 @@ impl StorageHandler {
     ) -> Result<BdResponse, Box<dyn Error>> {
         let file_id = reader.read_u64()?;
 
-        let result = self.storage_service.get_storage_file_data_by_id(
-            session,
-            session.authentication().unwrap().user_id,
-            file_id,
-        );
+        trace!("Get file {file_id}");
 
-        self.answer_for_file_data(StorageTaskId::GetFileById, result)
+        let result = self
+            .storage_service
+            .get_storage_file_data_by_id(
+                session,
+                session.authentication().unwrap().user_id,
+                file_id,
+            )
+            .or_else(|_| {
+                self.publisher_storage_service
+                    .get_publisher_file_data_by_id(session, file_id)
+            });
+
+        match result {
+            Ok(file) => Ok(TaskReply::with_single_result(
+                StorageTaskId::GetFileById,
+                Box::from(FileDataResult { file }),
+            )
+            .to_response()?),
+            Err(error) => Ok(TaskReply::with_only_error_code(
+                error.into(),
+                StorageTaskId::GetFileById,
+            )
+            .to_response()?),
+        }
     }
 
     fn list_files_by_owner(
@@ -190,17 +186,18 @@ impl StorageHandler {
         reader: &mut BdReader,
     ) -> Result<BdResponse, Box<dyn Error>> {
         let owner_id = reader.read_u64()?;
-        let start_date = reader.read_u32()?;
+        let min_date_time = reader.read_u32()?;
         let max_num_results = reader.read_u16()?;
-        let result_offset = reader.read_u16()?;
+
+        trace!("List files of {owner_id}, since {min_date_time}, up to {max_num_results}");
 
         let result = if reader.next_is_str().unwrap_or(false) {
             let filter = reader.read_str()?;
             self.storage_service.filter_storage_files(
                 session,
                 owner_id,
-                start_date as i64,
-                result_offset as usize,
+                min_date_time as i64,
+                0,
                 max_num_results as usize,
                 filter,
             )
@@ -208,8 +205,8 @@ impl StorageHandler {
             self.storage_service.list_storage_files(
                 session,
                 owner_id,
-                start_date as i64,
-                result_offset as usize,
+                min_date_time as i64,
+                0,
                 max_num_results as usize,
             )
         };
@@ -217,81 +214,35 @@ impl StorageHandler {
         self.answer_for_file_info_slice(StorageTaskId::ListFilesByOwner, result)
     }
 
-    fn list_all_publisher_files(
+    fn list_publisher_files(
         &self,
         session: &mut BdSession,
         reader: &mut BdReader,
     ) -> Result<BdResponse, Box<dyn Error>> {
-        let start_date = reader.read_u32()?;
+        let min_date_time = reader.read_u32()?;
         let max_num_results = reader.read_u16()?;
-        let result_offset = reader.read_u16()?;
+
+        trace!("List publisher files since {min_date_time}, up to {max_num_results}");
 
         let result = if reader.next_is_str().unwrap_or(false) {
             let filter = reader.read_str()?;
             self.publisher_storage_service.filter_publisher_files(
                 session,
-                start_date as i64,
-                result_offset as usize,
+                min_date_time as i64,
+                0,
                 max_num_results as usize,
                 filter,
             )
         } else {
             self.publisher_storage_service.list_publisher_files(
                 session,
-                start_date as i64,
-                result_offset as usize,
+                min_date_time as i64,
+                0,
                 max_num_results as usize,
             )
         };
 
-        self.answer_for_file_info_slice(StorageTaskId::ListAllPublisherFiles, result)
-    }
-
-    fn get_publisher_file(
-        &self,
-        session: &mut BdSession,
-        reader: &mut BdReader,
-    ) -> Result<BdResponse, Box<dyn Error>> {
-        let filename = reader.read_str()?;
-
-        let result = self
-            .publisher_storage_service
-            .get_publisher_file_data(session, filename.clone());
-
-        self.answer_for_file_data(StorageTaskId::GetPublisherFile, result)
-    }
-
-    fn update_file(
-        &self,
-        session: &mut BdSession,
-        reader: &mut BdReader,
-    ) -> Result<BdResponse, Box<dyn Error>> {
-        let file_id = reader.read_u64()?;
-        let file_data = reader.read_blob()?;
-
-        let result = self.storage_service.update_storage_file_data(
-            session,
-            session.authentication().unwrap().user_id,
-            file_id,
-            file_data,
-        );
-
-        self.answer_for_no_return_value(StorageTaskId::UpdateFile, result)
-    }
-
-    fn answer_for_file_data(
-        &self,
-        task_id: StorageTaskId,
-        result: Result<Vec<u8>, StorageServiceError>,
-    ) -> Result<BdResponse, Box<dyn Error>> {
-        match result {
-            Ok(data) => Ok(TaskReply::with_results(
-                task_id,
-                vec![Box::from(FileDataResult { data })],
-            )
-            .to_response()?),
-            Err(error) => Ok(TaskReply::with_only_error_code(error.into(), task_id).to_response()?),
-        }
+        self.answer_for_file_info_slice(StorageTaskId::ListPublisherFiles, result)
     }
 
     fn answer_for_file_info_slice(
@@ -302,19 +253,6 @@ impl StorageHandler {
         match result {
             Ok(info) => {
                 Ok(TaskReply::with_result_slice(task_id, info.serializable()).to_response()?)
-            }
-            Err(error) => Ok(TaskReply::with_only_error_code(error.into(), task_id).to_response()?),
-        }
-    }
-
-    fn answer_for_no_return_value(
-        &self,
-        task_id: StorageTaskId,
-        result: Result<(), StorageServiceError>,
-    ) -> Result<BdResponse, Box<dyn Error>> {
-        match result {
-            Ok(_) => {
-                Ok(TaskReply::with_only_error_code(BdErrorCode::NoError, task_id).to_response()?)
             }
             Err(error) => Ok(TaskReply::with_only_error_code(error.into(), task_id).to_response()?),
         }

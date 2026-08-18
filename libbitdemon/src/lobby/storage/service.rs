@@ -28,6 +28,11 @@ pub struct StorageFileInfo {
     pub owner_id: u64,
 }
 
+pub struct StorageFile {
+    pub info: StorageFileInfo,
+    pub data: Vec<u8>,
+}
+
 /// Determines the visibility of a file
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum FileVisibility {
@@ -77,7 +82,7 @@ pub trait UserStorageService {
         session: &BdSession,
         owner_id: u64,
         file_id: u64,
-    ) -> Result<Vec<u8>, StorageServiceError>;
+    ) -> Result<StorageFile, StorageServiceError>;
 
     /// Retrieves the data of a file identified by a filename.
     ///
@@ -246,6 +251,12 @@ pub trait PublisherStorageService {
         session: &BdSession,
         filename: String,
     ) -> Result<Vec<u8>, StorageServiceError>;
+
+    fn get_publisher_file_data_by_id(
+        &self,
+        session: &BdSession,
+        file_id: u64,
+    ) -> Result<StorageFile, StorageServiceError>;
 
     /// Lists details of the publisher files.
     /// The result is returned as a [`ResultSlice`].

@@ -310,16 +310,15 @@ impl<'a> BdWriter<'a> {
     }
 
     pub fn write_str(&mut self, value: &str) -> Result<(), Box<dyn Error>> {
-        ensure!(
-            self.mode == StreamMode::ByteMode,
-            ModeSnafu {
-                actual_mode: self.mode,
-                expected_mode: StreamMode::ByteMode
-            }
-        );
-
         if self.type_checked {
             self.write_data_type(BufferDataType::no_array(BdDataType::SignedChar8StringType))?;
+        }
+
+        if self.mode == StreamMode::BitMode {
+            self.write_bits(value.as_bytes(), value.len() * 8)?;
+            self.write_bits(&[0u8], 8)?;
+
+            return Ok(());
         }
 
         self.cursor.write_all(value.as_bytes())?;
@@ -519,19 +518,18 @@ impl<'a> BdWriter<'a> {
     }
 
     pub fn write_blob(&mut self, value: &[u8]) -> Result<(), Box<dyn Error>> {
-        ensure!(
-            self.mode == StreamMode::ByteMode,
-            ModeSnafu {
-                actual_mode: self.mode,
-                expected_mode: StreamMode::ByteMode
-            }
-        );
-
         if self.type_checked {
             self.write_data_type(BufferDataType::no_array(BdDataType::BlobType))?;
         }
 
         self.write_u32(value.len() as u32)?;
+
+        if self.mode == StreamMode::BitMode {
+            self.write_bits(value, value.len() * 8)?;
+
+            return Ok(());
+        }
+
         self.cursor.write_all(value)?;
 
         Ok(())

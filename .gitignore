@@ -2,3 +2,5 @@
 local
 .vscode
 /target
+/db/
+/storage/
