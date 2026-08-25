@@ -2,7 +2,7 @@ use crate::messaging::bd_reader::BdReader;
 use crate::networking::bd_session::SessionId;
 use crate::messaging::bd_serialization::BdSerialize;
 use crate::messaging::bd_writer::BdWriter;
-use log::debug;
+use snafu::{Snafu, ensure};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Mutex;
@@ -13,6 +13,19 @@ const KEY_LEN: usize = 16;
 
 const ID_LEN: usize = 8;
 const SECRET_LEN: usize = 16;
+
+#[derive(Debug, Snafu)]
+enum MatchMakingError {
+    #[snafu(display(
+        "Session advertisement blobs are {address}/{host}/{key} bytes, \
+         not {ADDRESS_LEN}/{HOST_LEN}/{KEY_LEN}"
+    ))]
+    MalformedAdvertisement {
+        address: usize,
+        host: usize,
+        key: usize,
+    },
+}
 
 #[derive(Clone, Debug)]
 pub struct MatchMakingInfo {
@@ -34,14 +47,14 @@ impl MatchMakingInfo {
         let host = reader.read_blob()?;
         let key = reader.read_blob()?;
 
-        if address.len() != ADDRESS_LEN || host.len() != HOST_LEN || key.len() != KEY_LEN {
-            debug!(
-                "Session advertisement blobs are {}/{}/{} bytes, not {ADDRESS_LEN}/{HOST_LEN}/{KEY_LEN}",
-                address.len(),
-                host.len(),
-                key.len()
-            );
-        }
+        ensure!(
+            address.len() == ADDRESS_LEN && host.len() == HOST_LEN && key.len() == KEY_LEN,
+            MalformedAdvertisementSnafu {
+                address: address.len(),
+                host: host.len(),
+                key: key.len(),
+            }
+        );
 
         let free_public_slots = reader.read_i32()?;
         let used_public_slots = reader.read_i32()?;
