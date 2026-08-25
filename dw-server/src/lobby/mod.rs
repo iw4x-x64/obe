@@ -112,9 +112,7 @@ impl ConfiguredEnvironment {
         self
     }
 
-    const BANDWIDTH_TEST_PORT: u16 = 3076;
-
-pub fn configure_lobby_server(self, lobby_server: &LobbyServer) {
+    pub fn configure_lobby_server(self, lobby_server: &LobbyServer) {
         lobby_server.add_service(self.service_id, self.handler);
     }
 
