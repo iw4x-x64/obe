@@ -170,6 +170,11 @@ async fn set_activity(Path((title, user)): Path<(String, String)>, body: String)
     };
 
     if let Some(connection) = member(body.as_str(), "connectionString") {
+        if let Err(what) = usable_session(connection.as_str()) {
+            warn!("Activity for {user_id} {what}; not published: {connection}");
+            return StatusCode::OK.into_response();
+        }
+
         activity::set_activity(user_id, connection.as_str());
     } else {
         warn!("Activity for {user_id} carries no connectionString: {body}");
@@ -214,6 +219,11 @@ async fn send_invites(headers: HeaderMap, Path(title): Path<String>, body: Strin
         },
     };
 
+    if let Err(what) = usable_session(connection.as_str()) {
+        warn!("Invite from {from} {what}; not delivered: {connection}");
+        return StatusCode::OK.into_response();
+    }
+
     let mut sent = 0;
 
     for to in xuids_in(body.as_str()) {
@@ -247,6 +257,28 @@ fn xuids_in(body: &str) -> Vec<u64> {
         .split(',')
         .filter_map(|f| f.trim().trim_matches('"').parse().ok())
         .collect()
+}
+
+fn usable_session(connection: &str) -> Result<(), &'static str> {
+    if let Some(id) = member(connection, "dw_sec_kid")
+        && repeated_byte(id.as_str())
+    {
+        return Err("carries a placeholder security ID");
+    }
+
+    if let Some(key) = member(connection, "dw_sec_key")
+        && repeated_byte(key.as_str())
+    {
+        return Err("carries a placeholder security key");
+    }
+
+    Ok(())
+}
+
+fn repeated_byte(hex: &str) -> bool {
+    let b = hex.as_bytes();
+
+    !b.is_empty() && b.len().is_multiple_of(2) && b.chunks(2).all(|c| c == &b[..2])
 }
 
 fn member(body: &str, key: &str) -> Option<String> {
@@ -312,4 +344,29 @@ pub fn router() -> Router {
             put(set_activity).post(set_activity).delete(delete_activity),
         )
         .route("/titles/{title}/invites", post(send_invites))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_placeholder_identity_is_refused() {
+        let zeros = r#"{"dw_sec_kid":"0000000000000000","dw_sec_key":"01010101010101010101010101010101"}"#;
+        assert!(usable_session(zeros).is_err());
+
+        let ones = r#"{"dw_sec_kid":"2406ec84b2a3fea2","dw_sec_key":"01010101010101010101010101010101"}"#;
+        assert!(usable_session(ones).is_err());
+    }
+
+    #[test]
+    fn a_real_identity_is_kept() {
+        let real = r#"{"dw_sec_kid":"2406ec84b2a3fea2","dw_sec_key":"c7f12bd8711bedc5f061feb4fd68f006"}"#;
+        assert!(usable_session(real).is_ok());
+    }
+
+    #[test]
+    fn a_string_of_another_shape_is_left_alone() {
+        assert!(usable_session(r#"{"something":"else"}"#).is_ok());
+    }
 }
