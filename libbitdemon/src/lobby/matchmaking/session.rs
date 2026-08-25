@@ -172,16 +172,16 @@ impl SessionRegistry {
         had
     }
 
-    pub fn delete(&self, id: &[u8]) -> bool {
+    pub fn delete(&self, connection: SessionId, id: &[u8]) -> bool {
         let Ok(host) = <[u8; ID_LEN]>::try_from(id) else {
             return false;
         };
 
         let mut state = self.state.lock().unwrap();
 
-        let Some(connection) = state.by_host.get(&host).copied() else {
+        if state.by_host.get(&host) != Some(&connection) {
             return false;
-        };
+        }
 
         state.forget(connection).is_some()
     }

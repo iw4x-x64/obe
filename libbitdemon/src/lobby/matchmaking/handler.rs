@@ -49,7 +49,7 @@ impl LobbyHandler for MatchMakingHandler {
         match task_id {
             MatchMakingTaskId::CreateSession => self.create_session(session, &mut message.reader),
             MatchMakingTaskId::UpdateSession => self.update_session(session, &mut message.reader),
-            MatchMakingTaskId::DeleteSession => self.delete_session(&mut message.reader),
+            MatchMakingTaskId::DeleteSession => self.delete_session(session, &mut message.reader),
             MatchMakingTaskId::FindSessions => self.find_sessions(&mut message.reader),
         }
     }
@@ -98,10 +98,23 @@ impl MatchMakingHandler {
             .to_response()
     }
 
-    fn delete_session(&self, reader: &mut BdReader) -> Result<BdResponse, Box<dyn Error>> {
+    fn delete_session(
+        &self,
+        session: &BdSession,
+        reader: &mut BdReader,
+    ) -> Result<BdResponse, Box<dyn Error>> {
         let id = reader.read_blob()?;
 
-        let removed = self.registry.delete(id.as_slice());
+        let removed = self.registry.delete(session.id, id.as_slice());
+
+        if !removed {
+            warn!(
+                "Connection {} asked to delete session {}, which it does not own",
+                session.id,
+                hex(id.as_slice())
+            );
+        }
+
         trace!("Delete session, removed: {removed}");
 
         TaskReply::with_only_error_code(BdErrorCode::NoError, MatchMakingTaskId::DeleteSession as u8)
