@@ -11,8 +11,8 @@ const ADDRESS_LEN: usize = 37;
 const HOST_LEN: usize = 8;
 const KEY_LEN: usize = 16;
 
-const ID_LEN: usize = 8;
-const SECRET_LEN: usize = 16;
+const ID_LEN: usize = HOST_LEN;
+const SECRET_LEN: usize = KEY_LEN;
 
 #[derive(Debug, Snafu)]
 enum MatchMakingError {
@@ -111,13 +111,41 @@ impl BdSerialize for SessionCreateResult {
 }
 
 pub struct SessionRegistry {
-    sessions: Mutex<HashMap<SessionId, MatchMakingInfo>>,
+    state: Mutex<RegistryState>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    sessions: HashMap<SessionId, MatchMakingInfo>,
+    by_host: HashMap<[u8; ID_LEN], SessionId>,
+}
+
+impl RegistryState {
+    fn forget(&mut self, connection: SessionId) -> Option<MatchMakingInfo> {
+        let info = self.sessions.remove(&connection)?;
+
+        if let Ok(host) = <[u8; ID_LEN]>::try_from(info.host.as_slice())
+            && self.by_host.get(&host) == Some(&connection)
+        {
+            self.by_host.remove(&host);
+        }
+
+        Some(info)
+    }
+
+    fn remember(&mut self, connection: SessionId, info: MatchMakingInfo) {
+        if let Ok(host) = <[u8; ID_LEN]>::try_from(info.host.as_slice()) {
+            self.by_host.insert(host, connection);
+        }
+
+        self.sessions.insert(connection, info);
+    }
 }
 
 impl SessionRegistry {
     pub fn new() -> SessionRegistry {
         SessionRegistry {
-            sessions: Mutex::new(HashMap::new()),
+            state: Mutex::new(RegistryState::default()),
         }
     }
 
@@ -126,37 +154,40 @@ impl SessionRegistry {
         connection: SessionId,
         info: MatchMakingInfo,
     ) -> ([u8; ID_LEN], [u8; SECRET_LEN]) {
-        let mut secret = [0u8; SECRET_LEN];
-        let n = secret.len().min(info.key.len());
-        secret[..n].copy_from_slice(&info.key[..n]);
+        let id = <[u8; ID_LEN]>::try_from(info.host.as_slice()).unwrap_or([0u8; ID_LEN]);
+        let secret = <[u8; SECRET_LEN]>::try_from(info.key.as_slice()).unwrap_or([0u8; SECRET_LEN]);
 
-        self.sessions.lock().unwrap().insert(connection, info);
+        let mut state = self.state.lock().unwrap();
+        state.forget(connection);
+        state.remember(connection, info);
 
-        (connection.to_le_bytes(), secret)
+        (id, secret)
     }
 
     pub fn update(&self, connection: SessionId, info: MatchMakingInfo) -> bool {
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(connection, info)
-            .is_some()
+        let mut state = self.state.lock().unwrap();
+        let had = state.forget(connection).is_some();
+        state.remember(connection, info);
+
+        had
     }
 
     pub fn delete(&self, id: &[u8]) -> bool {
-        let Ok(key) = <[u8; ID_LEN]>::try_from(id) else {
+        let Ok(host) = <[u8; ID_LEN]>::try_from(id) else {
             return false;
         };
 
-        self.sessions
-            .lock()
-            .unwrap()
-            .remove(&SessionId::from_le_bytes(key))
-            .is_some()
+        let mut state = self.state.lock().unwrap();
+
+        let Some(connection) = state.by_host.get(&host).copied() else {
+            return false;
+        };
+
+        state.forget(connection).is_some()
     }
 
     pub fn list(&self) -> Vec<MatchMakingInfo> {
-        self.sessions.lock().unwrap().values().cloned().collect()
+        self.state.lock().unwrap().sessions.values().cloned().collect()
     }
 }
 

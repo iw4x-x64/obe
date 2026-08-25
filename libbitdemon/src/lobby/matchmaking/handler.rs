@@ -69,7 +69,7 @@ impl MatchMakingHandler {
 
         let (id, secret) = self.registry.create(session.id, info);
 
-        trace!("Created session {}", u64::from_le_bytes(id));
+        trace!("Created session {} on connection {}", hex(&id), session.id);
 
         let result: Box<dyn BdSerialize> = Box::new(SessionCreateResult {
             id: id.to_vec(),
@@ -128,6 +128,10 @@ impl MatchMakingHandler {
 
         TaskReply::with_results(MatchMakingTaskId::FindSessions as u8, results).to_response()
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn read_advertisement(reader: &mut BdReader) -> Result<MatchMakingInfo, Box<dyn Error>> {
