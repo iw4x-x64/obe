@@ -186,8 +186,15 @@ impl SessionRegistry {
         state.forget(connection).is_some()
     }
 
-    pub fn list(&self) -> Vec<MatchMakingInfo> {
-        self.state.lock().unwrap().sessions.values().cloned().collect()
+    pub fn list_for(&self, connection: SessionId) -> Vec<MatchMakingInfo> {
+        let state = self.state.lock().unwrap();
+
+        state
+            .sessions
+            .iter()
+            .filter(|(c, _)| **c != connection)
+            .map(|(_, info)| info.clone())
+            .collect()
     }
 }
 

@@ -50,7 +50,7 @@ impl LobbyHandler for MatchMakingHandler {
             MatchMakingTaskId::CreateSession => self.create_session(session, &mut message.reader),
             MatchMakingTaskId::UpdateSession => self.update_session(session, &mut message.reader),
             MatchMakingTaskId::DeleteSession => self.delete_session(session, &mut message.reader),
-            MatchMakingTaskId::FindSessions => self.find_sessions(&mut message.reader),
+            MatchMakingTaskId::FindSessions => self.find_sessions(session, &mut message.reader),
         }
     }
 }
@@ -121,18 +121,22 @@ impl MatchMakingHandler {
             .to_response()
     }
 
-    fn find_sessions(&self, reader: &mut BdReader) -> Result<BdResponse, Box<dyn Error>> {
+    fn find_sessions(
+        &self,
+        session: &BdSession,
+        reader: &mut BdReader,
+    ) -> Result<BdResponse, Box<dyn Error>> {
         let query = SessionQuery::deserialize(reader)?;
         read_trailer(reader)?;
 
         trace!(
-            "Find sessions, query kind {} filters {:?}",
-            query.kind, query.filters
+            "Find sessions for connection {}, query kind {} filters {:?}",
+            session.id, query.kind, query.filters
         );
 
         let results: Vec<Box<dyn BdSerialize>> = self
             .registry
-            .list()
+            .list_for(session.id)
             .into_iter()
             .map(|info| Box::new(info) as Box<dyn BdSerialize>)
             .collect();
