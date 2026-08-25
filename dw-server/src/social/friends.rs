@@ -34,14 +34,81 @@ pub fn lookup_name(user_id: u64) -> Option<String> {
     })
 }
 
-pub fn lookup_id(username: &str) -> Option<u64> {
+pub fn lookup_ids(username: &str) -> Vec<u64> {
     SOCIAL_DB.with_borrow(|conn| {
-        conn.query_row(
-            "SELECT user_id FROM known_user WHERE username = ?1 COLLATE NOCASE",
-            params![username],
-            |row| row.get(0),
-        )
-        .ok()
+        let mut statement = match conn.prepare(
+            "SELECT user_id FROM known_user
+              WHERE username = ?1 COLLATE NOCASE
+              ORDER BY seen_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = statement.query_map(params![username], |row| row.get(0));
+
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    })
+}
+
+pub struct Match {
+    pub user_id: u64,
+    pub username: String,
+}
+
+const SEARCH_LIMIT: i64 = 64;
+
+pub fn like_pattern(query: &str) -> String {
+    let mut out = String::with_capacity(query.len() + 2);
+
+    out.push('%');
+
+    for c in query.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+
+        out.push(c);
+    }
+
+    out.push('%');
+    out
+}
+
+pub fn search(query: &str) -> Vec<Match> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+
+    SOCIAL_DB.with_borrow(|conn| {
+        let mut statement = match conn.prepare(
+            "SELECT user_id, username
+               FROM known_user
+              WHERE username LIKE ?1 ESCAPE '\\'
+              ORDER BY (username = ?2 COLLATE NOCASE) DESC, seen_at DESC
+              LIMIT ?3",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = statement.query_map(
+            params![like_pattern(query), query, SEARCH_LIMIT],
+            |row| {
+                Ok(Match {
+                    user_id: row.get(0)?,
+                    username: row.get(1)?,
+                })
+            },
+        );
+
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
     })
 }
 
@@ -83,6 +150,34 @@ pub fn incoming_requests(user_id: u64) -> Vec<Friendship> {
                FROM friend_request r
                LEFT JOIN known_user k ON k.user_id = r.from_id
               WHERE r.to_id = ?1
+              ORDER BY r.created_at",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = statement.query_map(params![user_id], |row| {
+            Ok(Friendship {
+                user_id: row.get(0)?,
+                username: row.get(1)?,
+                mutual: false,
+            })
+        });
+
+        match rows {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    })
+}
+
+pub fn outgoing_requests(user_id: u64) -> Vec<Friendship> {
+    SOCIAL_DB.with_borrow(|conn| {
+        let mut statement = match conn.prepare(
+            "SELECT r.to_id, COALESCE(k.username, '')
+               FROM friend_request r
+               LEFT JOIN known_user k ON k.user_id = r.to_id
+              WHERE r.from_id = ?1
               ORDER BY r.created_at",
         ) {
             Ok(s) => s,

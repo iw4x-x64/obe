@@ -73,7 +73,12 @@ fn parse_xuid(segment: &str) -> Option<u64> {
 #[derive(Deserialize)]
 struct FriendAction {
     user: String,
-    other: String,
+
+    #[serde(default)]
+    id: Option<String>,
+
+    #[serde(default)]
+    other: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -81,22 +86,122 @@ struct ActionResult {
     result: String,
 }
 
+enum Found {
+    One(u64),
+    Many(Vec<u64>),
+    None,
+}
+
+fn by_name(who: &str) -> Found {
+    let ids = friends::lookup_ids(who);
+
+    match ids.len() {
+        0 => Found::None,
+        1 => Found::One(ids[0]),
+        _ => Found::Many(ids),
+    }
+}
+
+fn by_id(what: &str) -> Result<u64, NoOne> {
+    what.parse::<u64>()
+        .map_err(|_| NoOne::NotAnId(what.to_string()))
+}
+
+fn caller(who: &str) -> Found {
+    if let Ok(id) = who.parse::<u64>() {
+        return Found::One(id);
+    }
+
+    by_name(who)
+}
+
 fn resolve(who: &str) -> Option<u64> {
-    who.parse().ok().or_else(|| friends::lookup_id(who))
+    match caller(who) {
+        Found::One(id) => Some(id),
+        Found::Many(ids) => {
+            warn!(
+                "{} players answer to '{who}'; taking the one seen most recently",
+                ids.len()
+            );
+
+            ids.first().copied()
+        }
+        Found::None => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NoOne {
+    Missing,
+    NotAnId(String),
+    Ambiguous(String, usize),
+    Unknown,
+}
+
+fn refused(why: NoOne) -> Response {
+    let (status, result) = match why {
+        NoOne::Missing => (
+            StatusCode::BAD_REQUEST,
+            "the request names nobody".to_string(),
+        ),
+        NoOne::NotAnId(what) => (
+            StatusCode::BAD_REQUEST,
+            format!("\"{what}\" is not a player id"),
+        ),
+        NoOne::Ambiguous(who, how_many) => (
+            StatusCode::CONFLICT,
+            format!("{how_many} players answer to \"{who}\"; search and pick one"),
+        ),
+        NoOne::Unknown => (
+            StatusCode::NOT_FOUND,
+            "unknown player; they must have signed in at least once".to_string(),
+        ),
+    };
+
+    (status, Json(ActionResult { result })).into_response()
+}
+
+#[derive(Clone, Copy)]
+enum Other {
+    Name,
+    Id,
+}
+
+fn target(body: &FriendAction, other_is: Other) -> Result<u64, NoOne> {
+    if let Some(id) = body.id.as_deref() {
+        return by_id(id);
+    }
+
+    let Some(other) = body.other.as_deref() else {
+        return Err(NoOne::Missing);
+    };
+
+    match other_is {
+        Other::Id => by_id(other),
+        Other::Name => match by_name(other) {
+            Found::One(id) => Ok(id),
+            Found::Many(ids) => Err(NoOne::Ambiguous(other.to_string(), ids.len())),
+            Found::None => Err(NoOne::Unknown),
+        },
+    }
 }
 
 fn act(
     body: FriendAction,
+    other_is: Other,
     f: impl Fn(u64, u64) -> Result<&'static str, &'static str>,
 ) -> Response {
-    let (Some(user), Some(other)) = (resolve(&body.user), resolve(&body.other)) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ActionResult {
-                result: "unknown player; they must have signed in at least once".to_string(),
-            }),
-        )
-            .into_response();
+    let user = match caller(&body.user) {
+        Found::One(id) => id,
+        Found::Many(ids) => {
+            return refused(NoOne::Ambiguous(body.user.clone(), ids.len()));
+        }
+        Found::None => return refused(NoOne::Unknown),
+    };
+
+    let other = match target(&body, other_is) {
+        Ok(id) => id,
+        Err(why) => return refused(why),
     };
 
     match f(user, other) {
@@ -115,15 +220,44 @@ fn act(
 }
 
 async fn request(Json(body): Json<FriendAction>) -> Response {
-    act(body, friends::request)
+    act(body, Other::Name, friends::request)
 }
 
 async fn accept(Json(body): Json<FriendAction>) -> Response {
-    act(body, friends::accept)
+    act(body, Other::Id, friends::accept)
 }
 
 async fn remove(Json(body): Json<FriendAction>) -> Response {
-    act(body, friends::remove)
+    act(body, Other::Id, friends::remove)
+}
+
+#[derive(Deserialize)]
+struct SearchRequest {
+    #[allow(dead_code)]
+    user: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct MatchView {
+    id: u64,
+    name: String,
+}
+
+async fn search(Json(body): Json<SearchRequest>) -> Response {
+    let found = friends::search(body.name.as_str());
+
+    info!("Social: {} players answer to '{}'", found.len(), body.name);
+
+    let results: Vec<MatchView> = found
+        .into_iter()
+        .map(|m| MatchView {
+            id: m.user_id,
+            name: m.username,
+        })
+        .collect();
+
+    Json(serde_json::json!({ "results": results })).into_response()
 }
 
 #[derive(Serialize)]
@@ -144,8 +278,11 @@ async fn list(Path(who): Path<String>) -> Response {
         mutual: f.mutual,
     };
 
+    let mut roster: Vec<FriendView> = friends::list(user).iter().map(view).collect();
+    roster.extend(friends::outgoing_requests(user).iter().map(view));
+
     Json(serde_json::json!({
-        "friends": friends::list(user).iter().map(view).collect::<Vec<_>>(),
+        "friends": roster,
         "incoming": friends::incoming_requests(user).iter().map(view).collect::<Vec<_>>(),
     }))
     .into_response()
@@ -336,6 +473,7 @@ pub fn router() -> Router {
         .route("/users/{user}/people", get(people))
         .route("/iw4x/friends/{who}", get(list))
         .route("/iw4x/friends/request", post(request))
+        .route("/iw4x/friends/search", post(search))
         .route("/iw4x/friends/accept", post(accept))
         .route("/iw4x/friends/remove", post(remove))
         .route("/iw4x/invites/{who}", get(invites))
@@ -368,5 +506,75 @@ mod tests {
     #[test]
     fn a_string_of_another_shape_is_left_alone() {
         assert!(usable_session(r#"{"something":"else"}"#).is_ok());
+    }
+
+    fn action(id: Option<&str>, other: Option<&str>) -> FriendAction {
+        FriendAction {
+            user: "1".to_string(),
+            id: id.map(str::to_string),
+            other: other.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_id_names_the_player_it_names() {
+        assert_eq!(
+            target(&action(Some("2533274790395904"), None), Other::Name),
+            Ok(2533274790395904)
+        );
+    }
+
+    #[test]
+    fn an_id_is_taken_over_a_name_beside_it() {
+        assert_eq!(target(&action(Some("7"), Some("Soap")), Other::Name), Ok(7));
+    }
+
+    #[test]
+    fn an_id_that_is_not_one_is_refused() {
+        assert_eq!(
+            target(&action(Some("Soap"), None), Other::Name),
+            Err(NoOne::NotAnId("Soap".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_request_naming_nobody_is_refused() {
+        assert_eq!(target(&action(None, None), Other::Name), Err(NoOne::Missing));
+    }
+
+    #[test]
+    fn an_endpoint_dealing_in_ids_reads_other_as_one() {
+        assert_eq!(target(&action(None, Some("1337")), Other::Id), Ok(1337));
+    }
+
+    #[test]
+    fn an_endpoint_dealing_in_ids_refuses_a_name() {
+        assert_eq!(
+            target(&action(None, Some("Soap")), Other::Id),
+            Err(NoOne::NotAnId("Soap".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_caller_that_reads_as_an_id_is_one() {
+        assert!(matches!(caller("2533274790395904"), Found::One(2533274790395904)));
+    }
+
+    #[test]
+    fn a_refusal_says_which_name_was_ambiguous() {
+        let response = refused(NoOne::Ambiguous("Soap".to_string(), 3));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn a_search_pattern_matches_anywhere_in_a_name() {
+        assert_eq!(friends::like_pattern("Soap"), "%Soap%");
+    }
+
+    #[test]
+    fn a_wildcard_in_a_name_is_a_character_like_any_other() {
+        assert_eq!(friends::like_pattern("100%"), "%100\\%%");
+        assert_eq!(friends::like_pattern("a_b"), "%a\\_b%");
+        assert_eq!(friends::like_pattern("a\\b"), "%a\\\\b%");
     }
 }
