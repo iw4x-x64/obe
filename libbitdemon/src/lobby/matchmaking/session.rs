@@ -242,3 +242,78 @@ impl SessionQuery {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn advertisement(host: u8, key: u8) -> MatchMakingInfo {
+        MatchMakingInfo {
+            address: vec![0u8; ADDRESS_LEN],
+            host: vec![host; HOST_LEN],
+            key: vec![key; KEY_LEN],
+            free_public_slots: 0,
+            used_public_slots: 0,
+            free_private_slots: 0,
+            used_private_slots: 0,
+            title_data: [0i32; 9],
+        }
+    }
+
+    #[test]
+    fn create_names_the_session_by_what_the_client_advertised() {
+        let registry = SessionRegistry::new();
+
+        let (id, secret) = registry.create(7, advertisement(0xab, 0xcd));
+
+        assert_eq!(id, [0xabu8; ID_LEN]);
+        assert_eq!(secret, [0xcdu8; SECRET_LEN]);
+    }
+
+    #[test]
+    fn a_connection_cannot_delete_a_session_it_does_not_own() {
+        let registry = SessionRegistry::new();
+
+        let (id, _) = registry.create(1, advertisement(0xab, 0xcd));
+
+        assert!(!registry.delete(2, id.as_slice()));
+        assert_eq!(registry.list_for(2).len(), 1);
+
+        assert!(registry.delete(1, id.as_slice()));
+        assert_eq!(registry.list_for(2).len(), 0);
+    }
+
+    #[test]
+    fn a_lost_connection_takes_its_session_with_it() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, advertisement(0xab, 0xcd));
+
+        assert!(registry.remove_connection(1));
+        assert!(!registry.remove_connection(1));
+        assert_eq!(registry.list_for(2).len(), 0);
+    }
+
+    #[test]
+    fn a_client_is_never_shown_its_own_session() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, advertisement(0xab, 0xcd));
+        registry.create(2, advertisement(0x12, 0x34));
+
+        assert_eq!(registry.list_for(1).len(), 1);
+        assert_eq!(registry.list_for(1)[0].host, vec![0x12u8; HOST_LEN]);
+    }
+
+    #[test]
+    fn re_advertising_replaces_rather_than_accumulates() {
+        let registry = SessionRegistry::new();
+
+        let (first, _) = registry.create(1, advertisement(0xab, 0xcd));
+        assert!(registry.update(1, advertisement(0x99, 0x88)));
+
+        assert_eq!(registry.list_for(2).len(), 1);
+        assert!(!registry.delete(1, first.as_slice()));
+        assert!(registry.delete(1, [0x99u8; ID_LEN].as_slice()));
+    }
+}
