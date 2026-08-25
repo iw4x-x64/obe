@@ -101,11 +101,9 @@ impl RichPresenceHandler {
             });
 
         match result {
-            Ok(_) => Ok(TaskReply::with_only_error_code(
-                BdErrorCode::NoError,
-                RichPresenceTaskId::GetInfo,
-            )
-            .to_response()?),
+            Ok(results) => {
+                Ok(TaskReply::with_results(RichPresenceTaskId::GetInfo, results).to_response()?)
+            }
             Err(code) => Self::handle_rich_presence_error(code, RichPresenceTaskId::GetInfo)?,
         }
     }
