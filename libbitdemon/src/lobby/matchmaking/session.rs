@@ -186,6 +186,10 @@ impl SessionRegistry {
         state.forget(connection).is_some()
     }
 
+    pub fn remove_connection(&self, connection: SessionId) -> bool {
+        self.state.lock().unwrap().forget(connection).is_some()
+    }
+
     pub fn list_for(&self, connection: SessionId) -> Vec<MatchMakingInfo> {
         let state = self.state.lock().unwrap();
 

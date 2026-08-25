@@ -64,10 +64,15 @@ pub fn configure_lobby_server(
     configurer.direct_config(Group, create_group_handler(session_manager.clone()));
     configurer.direct_config(KeyArchive, Arc::new(KeyArchiveHandler::new()));
     configurer.direct_config(League, Arc::new(LeagueHandler::new()));
-    configurer.direct_config(
-        MatchMaking,
-        Arc::new(MatchMakingHandler::new(Arc::new(SessionRegistry::new()))),
-    );
+    let sessions = Arc::new(SessionRegistry::new());
+    {
+        let sessions = sessions.clone();
+        session_manager.on_session_unregistered(move |s| {
+            sessions.remove_connection(s.id);
+        });
+    }
+
+    configurer.direct_config(MatchMaking, Arc::new(MatchMakingHandler::new(sessions)));
     let router = lobby_server.message_router();
 
     {
