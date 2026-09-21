@@ -72,6 +72,7 @@ pub fn configure_lobby_server(
         });
     }
 
+    let population_router = crate::population::router(sessions.clone(), &session_manager);
     configurer.direct_config(MatchMaking, Arc::new(MatchMakingHandler::new(sessions)));
     let router = lobby_server.message_router();
 
@@ -90,7 +91,7 @@ pub fn configure_lobby_server(
     configurer.direct_config(VoteRank, Arc::new(VoteRankHandler::new()));
     configurer.direct_config(Youtube, Arc::new(YoutubeHandler::new()));
 
-    configurer.into()
+    Router::from(configurer).merge(population_router)
 }
 
 pub struct ConfiguredEnvironment {

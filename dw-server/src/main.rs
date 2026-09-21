@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod lobby;
 mod log;
+mod population;
 mod social;
 
 use crate::auth::{AuthState, handle_auth};

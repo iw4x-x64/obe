@@ -6,7 +6,7 @@ use crate::messaging::BdErrorCode;
 use crate::messaging::bd_message::BdMessage;
 use crate::messaging::bd_reader::BdReader;
 use crate::messaging::bd_response::{BdResponse, ResponseCreator};
-use crate::messaging::bd_serialization::BdDeserialize;
+use crate::messaging::bd_serialization::{BdDeserialize, BdSerialize};
 use crate::networking::bd_session::BdSession;
 use log::warn;
 use num_traits::FromPrimitive;
@@ -89,10 +89,18 @@ impl CounterHandler {
             counter_ids.push(reader.read_u32()?);
         }
 
-        self.counter_service
-            .get_counter_totals(session, counter_ids)?;
+        let results: Vec<Box<dyn BdSerialize>> = self
+            .counter_service
+            .get_counter_totals(session, counter_ids)?
+            .into_iter()
+            .map(|v| {
+                Box::new(CounterValueResult {
+                    counter_id: v.counter_id,
+                    counter_value: v.counter_value,
+                }) as Box<dyn BdSerialize>
+            })
+            .collect();
 
-        TaskReply::with_only_error_code(BdErrorCode::NoError, CounterTaskId::GetCounterTotals)
-            .to_response()
+        TaskReply::with_results(CounterTaskId::GetCounterTotals as u8, results).to_response()
     }
 }

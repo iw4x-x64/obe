@@ -3,7 +3,7 @@ use crate::networking::bd_session::SessionId;
 use crate::messaging::bd_serialization::BdSerialize;
 use crate::messaging::bd_writer::BdWriter;
 use snafu::{Snafu, ensure};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::sync::Mutex;
 
@@ -79,6 +79,16 @@ impl MatchMakingInfo {
     }
 }
 
+impl MatchMakingInfo {
+    pub fn playlist(&self) -> u32 {
+        self.title_data[1] as u32
+    }
+
+    pub fn players(&self) -> usize {
+        (self.used_public_slots.max(0) + self.used_private_slots.max(0)) as usize
+    }
+}
+
 impl BdSerialize for MatchMakingInfo {
     fn serialize(&self, writer: &mut BdWriter) -> Result<(), Box<dyn Error>> {
         writer.write_blob(self.address.as_slice())?;
@@ -96,6 +106,12 @@ impl BdSerialize for MatchMakingInfo {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Population {
+    pub players: usize,
+    pub playlists: BTreeMap<u32, usize>,
 }
 
 pub struct SessionCreateResult {
@@ -200,6 +216,22 @@ impl SessionRegistry {
             .map(|(_, info)| info.clone())
             .collect()
     }
+
+    pub fn population(&self) -> Population {
+        let state = self.state.lock().unwrap();
+        let mut population = Population::default();
+
+        for info in state.sessions.values() {
+            let players = info.players();
+
+            if players > 0 {
+                *population.playlists.entry(info.playlist()).or_default() += players;
+                population.players += players;
+            }
+        }
+
+        population
+    }
 }
 
 impl Default for SessionRegistry {
@@ -258,6 +290,57 @@ mod tests {
             used_private_slots: 0,
             title_data: [0i32; 9],
         }
+    }
+
+    fn lobby(host: u8, playlist: i32, public: i32, private: i32) -> MatchMakingInfo {
+        let mut info = advertisement(host, host);
+        info.used_public_slots = public;
+        info.used_private_slots = private;
+        info.title_data[1] = playlist;
+
+        info
+    }
+
+    fn counts(population: &Population) -> Vec<(u32, usize)> {
+        population.playlists.iter().map(|(k, v)| (*k, *v)).collect()
+    }
+
+    #[test]
+    fn population_sums_used_slots_by_playlist() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, lobby(1, 5, 3, 1));
+        registry.create(2, lobby(2, 5, 2, 0));
+        registry.create(3, lobby(3, 7, 6, 0));
+
+        let population = registry.population();
+
+        assert_eq!(population.players, 12);
+        assert_eq!(counts(&population), vec![(5, 6), (7, 6)]);
+    }
+
+    #[test]
+    fn population_follows_updates_and_departures() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, lobby(1, 5, 3, 0));
+        registry.create(2, lobby(2, 7, 4, 0));
+        registry.update(1, lobby(1, 9, 2, 0));
+        registry.remove_connection(2);
+
+        let population = registry.population();
+
+        assert_eq!(population.players, 2);
+        assert_eq!(counts(&population), vec![(9, 2)]);
+    }
+
+    #[test]
+    fn an_empty_lobby_is_left_out() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, lobby(1, 5, 0, 0));
+
+        assert_eq!(registry.population(), Population::default());
     }
 
     #[test]
