@@ -40,7 +40,7 @@ pub fn router(sessions: Arc<SessionRegistry>, session_manager: &SessionManager) 
     }
 
     Router::new()
-        .route("/population", get(population_totals))
+        .route("/v1/population", get(population_totals))
         .with_state(PopulationState { sessions, online })
 }
 
