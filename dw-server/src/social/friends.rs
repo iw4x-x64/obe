@@ -1,4 +1,5 @@
 use crate::social::db::SOCIAL_DB;
+use crate::social::watch;
 use chrono::Utc;
 use log::info;
 use rusqlite::params;
@@ -12,6 +13,7 @@ pub struct Friendship {
 
 pub fn note_user(user_id: u64, username: &str) {
     let now = Utc::now().timestamp();
+    let renamed = lookup_name(user_id).is_some_and(|was| was != username);
 
     SOCIAL_DB.with_borrow(|conn| {
         let _ = conn.execute(
@@ -20,9 +22,12 @@ pub fn note_user(user_id: u64, username: &str) {
             params![user_id, username, now],
         );
     });
+
+    if renamed {
+        watch::bump_watchers_of(user_id);
+    }
 }
 
-#[allow(dead_code)]
 pub fn lookup_name(user_id: u64) -> Option<String> {
     SOCIAL_DB.with_borrow(|conn| {
         conn.query_row(

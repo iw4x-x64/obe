@@ -1,5 +1,6 @@
 use crate::social::activity;
 use crate::social::friends;
+use crate::social::watch;
 use axum::Router;
 use axum::extract::{Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -8,6 +9,7 @@ use axum::{Json, http::{HeaderMap, StatusCode, header}};
 use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[derive(Serialize)]
 struct Person {
@@ -205,10 +207,14 @@ fn act(
     };
 
     match f(user, other) {
-        Ok(result) => Json(ActionResult {
-            result: result.to_string(),
-        })
-        .into_response(),
+        Ok(result) => {
+            watch::bump(&[user, other]);
+
+            Json(ActionResult {
+                result: result.to_string(),
+            })
+            .into_response()
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ActionResult {
@@ -271,6 +277,8 @@ async fn list(Path(who): Path<String>) -> Response {
     let Some(user) = resolve(who.as_str()) else {
         return (StatusCode::NOT_FOUND, "unknown player").into_response();
     };
+
+    watch::touch(user);
 
     let view = |f: &friends::Friendship| FriendView {
         id: f.user_id,
@@ -468,14 +476,141 @@ async fn invites(Path(who): Path<String>) -> Response {
     Json(serde_json::json!({ "invites": waiting })).into_response()
 }
 
+#[derive(Serialize)]
+struct PresenceView {
+    id: u64,
+    name: String,
+    mutual: bool,
+    online: bool,
+    joinable: bool,
+}
+
+fn presence(f: &friends::Friendship) -> PresenceView {
+    let online = f.mutual && watch::is_online(f.user_id);
+
+    PresenceView {
+        id: f.user_id,
+        name: f.username.clone(),
+        mutual: f.mutual,
+        online,
+        joinable: online && activity::activity_of(f.user_id).is_some(),
+    }
+}
+
+async fn social(Path(who): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(user) = resolve(who.as_str()) else {
+        return (StatusCode::NOT_FOUND, "unknown player").into_response();
+    };
+
+    let since = q.get("since").and_then(|s| s.parse::<u64>().ok());
+    let wait = q
+        .get("wait")
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(watch::MAX_WAIT);
+
+    watch::touch(user);
+
+    let revision = watch::changed_since(user, since, wait).await;
+
+    watch::touch(user);
+
+    let mut roster: Vec<PresenceView> = friends::list(user).iter().map(presence).collect();
+    roster.extend(friends::outgoing_requests(user).iter().map(presence));
+
+    let incoming: Vec<PresenceView> =
+        friends::incoming_requests(user).iter().map(presence).collect();
+
+    let invites: Vec<InviteView> = activity::take_invites(user)
+        .into_iter()
+        .map(|i| InviteView {
+            from: i.from,
+            name: i.from_name,
+            connection: i.connection,
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "revision": revision,
+        "friends": roster,
+        "incoming": incoming,
+        "invites": invites,
+    }))
+    .into_response()
+}
+
+#[derive(Serialize)]
+struct JoinResult {
+    result: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection: Option<String>,
+}
+
+fn join_refused(status: StatusCode, why: &str) -> Response {
+    (
+        status,
+        Json(JoinResult {
+            result: why.to_string(),
+            connection: None,
+        }),
+    )
+        .into_response()
+}
+
+async fn join(Json(body): Json<FriendAction>) -> Response {
+    let user = match caller(&body.user) {
+        Found::One(id) => id,
+        Found::Many(ids) => return refused(NoOne::Ambiguous(body.user.clone(), ids.len())),
+        Found::None => return refused(NoOne::Unknown),
+    };
+
+    let other = match target(&body, Other::Id) {
+        Ok(id) => id,
+        Err(why) => return refused(why),
+    };
+
+    let mutual = friends::list(user)
+        .iter()
+        .any(|f| f.user_id == other && f.mutual);
+
+    if !mutual {
+        return join_refused(StatusCode::FORBIDDEN, "you are not friends");
+    }
+
+    if !watch::is_online(other) {
+        return join_refused(StatusCode::NOT_FOUND, "they are offline");
+    }
+
+    let Some(connection) = activity::activity_of(other) else {
+        return join_refused(StatusCode::NOT_FOUND, "they are not in a game");
+    };
+
+    if usable_session(connection.as_str()).is_err() {
+        return join_refused(StatusCode::NOT_FOUND, "they are not in a game");
+    }
+
+    info!("Social: {user} follows {other} into their session");
+
+    Json(JoinResult {
+        result: "joining".to_string(),
+        connection: Some(connection),
+    })
+    .into_response()
+}
+
 pub fn router() -> Router {
+    watch::spawn_sweeper();
+
     Router::new()
         .route("/users/{user}/people", get(people))
+        .route("/iw4x/social/{who}", get(social))
         .route("/iw4x/friends/{who}", get(list))
         .route("/iw4x/friends/request", post(request))
         .route("/iw4x/friends/search", post(search))
         .route("/iw4x/friends/accept", post(accept))
         .route("/iw4x/friends/remove", post(remove))
+        .route("/iw4x/friends/join", post(join))
         .route("/iw4x/invites/{who}", get(invites))
         .route(
             "/titles/{title}/users/{user}/activities",

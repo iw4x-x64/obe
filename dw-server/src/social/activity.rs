@@ -1,10 +1,12 @@
 use crate::social::db::SOCIAL_DB;
+use crate::social::watch;
 use chrono::Utc;
 use log::{info, trace};
 use rusqlite::params;
 
 pub fn set_activity(user_id: u64, connection: &str) {
     let now = Utc::now().timestamp();
+    let changed = activity_of(user_id).is_none_or(|was| was != connection);
 
     SOCIAL_DB.with_borrow(|conn| {
         let _ = conn.execute(
@@ -15,12 +17,21 @@ pub fn set_activity(user_id: u64, connection: &str) {
     });
 
     info!("Activity for {user_id}: {connection}");
+
+    if changed {
+        watch::bump_watchers_of(user_id);
+    }
 }
 
 pub fn clear_activity(user_id: u64) {
-    SOCIAL_DB.with_borrow(|conn| {
-        let _ = conn.execute("DELETE FROM activity WHERE user_id = ?1", params![user_id]);
+    let cleared = SOCIAL_DB.with_borrow(|conn| {
+        conn.execute("DELETE FROM activity WHERE user_id = ?1", params![user_id])
+            .unwrap_or(0)
     });
+
+    if cleared != 0 {
+        watch::bump_watchers_of(user_id);
+    }
 
     trace!("Activity cleared for {user_id}");
 }
@@ -48,6 +59,8 @@ pub fn invite(from: u64, to: u64, connection: &str) {
     });
 
     info!("Invite from {from} to {to}: {connection}");
+
+    watch::bump(&[to]);
 }
 
 pub struct Invitation {
