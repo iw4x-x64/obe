@@ -29,3 +29,13 @@ impl BdSerialize for FileDataResult {
         writer.write_blob(self.file.data.as_slice())
     }
 }
+
+pub struct FileIdResult {
+    pub id: u64,
+}
+
+impl BdSerialize for FileIdResult {
+    fn serialize(&self, writer: &mut BdWriter) -> Result<(), Box<dyn Error>> {
+        writer.write_u64(self.id)
+    }
+}

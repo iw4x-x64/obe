@@ -1,7 +1,7 @@
 use crate::domain::result_slice::ResultSlice;
 use crate::lobby::LobbyHandler;
 use crate::lobby::response::task_reply::TaskReply;
-use crate::lobby::storage::result::FileDataResult;
+use crate::lobby::storage::result::{FileDataResult, FileIdResult};
 use crate::lobby::storage::service::{
     FileVisibility, StorageFileInfo, StorageServiceError, ThreadSafePublisherStorageService,
     ThreadSafeUserStorageService,
@@ -104,7 +104,7 @@ impl StorageHandler {
         match result {
             Ok(info) => Ok(TaskReply::with_single_result(
                 StorageTaskId::CreateFile,
-                Box::from(info),
+                Box::from(FileIdResult { id: info.id }),
             )
             .to_response()?),
             Err(error) => Ok(TaskReply::with_only_error_code(
