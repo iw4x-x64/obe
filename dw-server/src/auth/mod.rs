@@ -77,7 +77,7 @@ fn serialize_ticket(ticket: &AuthTicket) -> Result<[u8; TICKET_SIZE], Box<dyn st
 }
 
 fn identify(headers: &HeaderMap) -> Option<(u64, String)> {
-    let token = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = String::from_utf8_lossy(headers.get(header::AUTHORIZATION)?.as_bytes());
     let token = token.strip_prefix("IW4x1.0 ")?;
 
     let mut xuid = None;
