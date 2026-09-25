@@ -154,12 +154,13 @@ impl BdSocket {
         let connection_loop = |session: &mut BdSession| -> Result<(), Box<dyn Error>> {
             loop {
                 let mut b: [u8; 4] = [0; 4];
-                let len = session.read(&mut b)?;
-                if len == 0 {
+                if session.read(&mut b[..1])? == 0 {
                     return Ok(());
                 }
 
-                ensure!(len == 4, IncompleteMessageHeaderSnafu {});
+                session
+                    .read_exact(&mut b[1..])
+                    .map_err(|_| IncompleteMessageHeaderSnafu {}.build())?;
                 let header = u32::from_le_bytes(b);
 
                 match header {
