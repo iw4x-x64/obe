@@ -61,7 +61,6 @@ impl BdSession {
     }
 
     pub fn set_authentication(&mut self, authentication: SessionAuthentication) {
-        debug_assert!(self.authentication.is_none());
         self.authentication = Some(authentication);
     }
 }
