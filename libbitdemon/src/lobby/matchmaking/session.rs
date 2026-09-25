@@ -333,6 +333,21 @@ mod tests {
         }
     }
 
+    fn search(playlist: i32, size: i32) -> SessionQuery {
+        let mut query = any();
+        query.filters = [8, playlist, 142, 0, 3, size];
+
+        query
+    }
+
+    fn open_lobby(host: u8, playlist: i32, free: i32) -> MatchMakingInfo {
+        let mut info = advertisement(host, host);
+        info.free_public_slots = free;
+        info.title_data = [8, playlist, 3, 0, 142, 0, playlist, 0, 0];
+
+        info
+    }
+
     fn counts(population: &Population) -> Vec<(u32, usize)> {
         population.playlists.iter().map(|(k, v)| (*k, *v)).collect()
     }
@@ -430,5 +445,42 @@ mod tests {
         assert_eq!(registry.list_for(2, &any()).len(), 1);
         assert!(!registry.delete(1, first.as_slice()));
         assert!(registry.delete(1, [0x99u8; ID_LEN].as_slice()));
+    }
+
+    #[test]
+    fn a_search_finds_only_lobbies_it_could_join() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, open_lobby(1, 5, 4));
+
+        let mut other_playlist = open_lobby(2, 7, 4);
+        other_playlist.title_data[6] = 7;
+        registry.create(2, other_playlist);
+
+        let mut old_playlists = open_lobby(3, 5, 4);
+        old_playlists.title_data[2] = 2;
+        registry.create(3, old_playlists);
+
+        let mut old_protocol = open_lobby(4, 5, 4);
+        old_protocol.title_data[4] = 141;
+        registry.create(4, old_protocol);
+
+        registry.create(5, open_lobby(5, 5, 1));
+
+        let found = registry.list_for(9, &search(5, 2));
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].host, vec![1u8; HOST_LEN]);
+    }
+
+    #[test]
+    fn private_slots_count_toward_room() {
+        let registry = SessionRegistry::new();
+
+        let mut lobby = open_lobby(1, 5, 1);
+        lobby.free_private_slots = 1;
+        registry.create(1, lobby);
+
+        assert_eq!(registry.list_for(9, &search(5, 2)).len(), 1);
     }
 }
