@@ -483,4 +483,19 @@ mod tests {
 
         assert_eq!(registry.list_for(9, &search(5, 2)).len(), 1);
     }
+
+    #[test]
+    fn a_search_gets_no_more_than_it_has_room_for() {
+        let registry = SessionRegistry::new();
+
+        for host in 1..=60 {
+            registry.create(host as SessionId, open_lobby(host, 5, 4));
+        }
+
+        assert_eq!(registry.list_for(99, &search(5, 1)).len(), 50);
+
+        let mut unbounded = search(5, 1);
+        unbounded.limit = 0;
+        assert_eq!(registry.list_for(99, &unbounded).len(), 60);
+    }
 }
