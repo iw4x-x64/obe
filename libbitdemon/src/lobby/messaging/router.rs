@@ -1,15 +1,14 @@
 use crate::lobby::response::push_message::PushMessage;
 use crate::messaging::bd_response::ResponseCreator;
-use crate::networking::bd_session::{BdSession, SessionId};
+use crate::networking::bd_session::{BdSession, SessionId, SessionWriter};
 use log::{debug, warn};
 use std::collections::HashMap;
-use std::net::TcpStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Recipient {
     session: SessionId,
-    stream: TcpStream,
+    writer: SessionWriter,
     key: [u8; 24],
 }
 
@@ -31,24 +30,19 @@ impl MessageRouter {
             return;
         };
 
-        match session.try_clone_stream() {
-            Ok(stream) => {
-                debug!(
-                    "Reachable for messages: user {} as '{}'",
-                    auth.user_id, auth.username
-                );
+        debug!(
+            "Reachable for messages: user {} as '{}'",
+            auth.user_id, auth.username
+        );
 
-                self.recipients.lock().unwrap().insert(
-                    auth.user_id,
-                    Recipient {
-                        session: session.id,
-                        stream,
-                        key: auth.session_key,
-                    },
-                );
-            }
-            Err(e) => warn!("Cannot reach user {} for messages: {e}", auth.user_id),
-        }
+        self.recipients.lock().unwrap().insert(
+            auth.user_id,
+            Recipient {
+                session: session.id,
+                writer: session.writer(),
+                key: auth.session_key,
+            },
+        );
     }
 
     pub fn unregister(&self, session: &BdSession) {
@@ -75,16 +69,16 @@ impl MessageRouter {
             payload: payload.to_vec(),
         };
 
-        let mut recipients = self.recipients.lock().unwrap();
+        let recipients = self.recipients.lock().unwrap();
 
-        let Some(r) = recipients.get_mut(&recipient) else {
+        let Some(r) = recipients.get(&recipient) else {
             debug!("No session for user {recipient}; message dropped");
             return false;
         };
 
         match message
             .to_response()
-            .and_then(|mut r2| r2.send_to(&mut r.stream, Some(&r.key)))
+            .and_then(|mut r2| r2.send_to(&mut *r.writer.lock().unwrap(), Some(&r.key)))
         {
             Ok(()) => {
                 debug!("Delivered {} bytes to user {recipient}", payload.len());

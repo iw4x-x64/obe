@@ -1,14 +1,18 @@
 use crate::auth::authentication::SessionAuthentication;
 use std::io;
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::{Arc, Mutex};
 
 pub type SessionId = u64;
+
+pub type SessionWriter = Arc<Mutex<TcpStream>>;
 
 pub struct BdSession {
     pub id: SessionId,
     authentication: Option<SessionAuthentication>,
     stream: BufReader<TcpStream>,
+    writer: SessionWriter,
 }
 
 impl io::Read for BdSession {
@@ -19,31 +23,37 @@ impl io::Read for BdSession {
 
 impl io::Write for BdSession {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.stream.get_mut().write(buf)
+        self.writer.lock().unwrap().write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.stream.get_mut().flush()
+        self.writer.lock().unwrap().flush()
     }
 }
 
 impl BdSession {
-    pub fn new(stream: TcpStream) -> Self {
+    pub fn new(stream: TcpStream) -> io::Result<Self> {
+        let writer = Arc::new(Mutex::new(stream.try_clone()?));
         let reader = BufReader::new(stream);
 
-        BdSession {
+        Ok(BdSession {
             id: 0,
             authentication: None,
             stream: reader,
-        }
+            writer,
+        })
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.stream.get_ref().peer_addr()
     }
 
-    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
-        self.stream.get_ref().try_clone()
+    pub fn writer(&self) -> SessionWriter {
+        self.writer.clone()
+    }
+
+    pub fn send_frame(&self, frame: &[u8]) -> io::Result<()> {
+        self.writer.lock().unwrap().write_all(frame)
     }
 
     pub fn authentication(&self) -> Option<&SessionAuthentication> {

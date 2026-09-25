@@ -35,7 +35,10 @@ impl BdResponse {
             .map(|a| a.session_key)
             .filter(|_| self.should_encrypt);
 
-        self.send_to(session, key.as_ref())
+        let frame = self.frame(key.as_ref())?;
+        session.send_frame(&frame)?;
+
+        Ok(())
     }
 
     pub fn send_to<W: Write>(
@@ -43,7 +46,16 @@ impl BdResponse {
         writer: &mut W,
         key: Option<&[u8; 24]>,
     ) -> Result<(), Box<dyn Error>> {
+        let frame = self.frame(key)?;
+        writer.write_all(&frame)?;
+
+        Ok(())
+    }
+
+    fn frame(&mut self, key: Option<&[u8; 24]>) -> Result<Vec<u8>, Box<dyn Error>> {
         log::trace!("Response ({} bytes): {:02x?}", self.data.len(), self.data);
+
+        let mut frame = Vec::with_capacity(self.data.len() + 16);
 
         if let Some(key) = key {
             let seed = generate_iv_seed();
@@ -56,18 +68,18 @@ impl BdResponse {
             // Written length minus length field itself
             // 1 byte (encrypted) + 4 byte (seed)
             let message_length = self.data.len() + 5;
-            writer.write_u32::<LittleEndian>(message_length as u32)?;
-            writer.write_u8(1u8)?; // Encrypted
-            writer.write_u32::<LittleEndian>(seed)?;
-            writer.write_all(self.data.as_slice())?;
+            frame.write_u32::<LittleEndian>(message_length as u32)?;
+            frame.write_u8(1u8)?; // Encrypted
+            frame.write_u32::<LittleEndian>(seed)?;
+            frame.extend_from_slice(self.data.as_slice());
         } else {
             // Written length minus length field itself
             let message_length = self.data.len() + 1;
-            writer.write_u32::<LittleEndian>(message_length as u32)?;
-            writer.write_u8(0u8)?; // Encrypted
-            writer.write_all(self.data.as_slice())?;
+            frame.write_u32::<LittleEndian>(message_length as u32)?;
+            frame.write_u8(0u8)?; // Encrypted
+            frame.extend_from_slice(self.data.as_slice());
         }
 
-        Ok(())
+        Ok(frame)
     }
 }

@@ -1,7 +1,7 @@
 use crate::messaging::bd_message::BdMessage;
 use crate::networking::bd_session::BdSession;
 use crate::networking::session_manager::SessionManager;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 use log::{debug, error, info};
 use snafu::{Snafu, ensure};
 use std::error::Error;
@@ -68,7 +68,14 @@ impl BdSocket {
             let session_manager = Arc::clone(session_manager);
             let message_handler = Arc::clone(&message_handler);
             thread::spawn(move || {
-                let mut session = BdSession::new(stream);
+                let mut session = match BdSession::new(stream) {
+                    Ok(session) => session,
+                    Err(e) => {
+                        error!("Could not set up a session: {e}");
+                        return;
+                    }
+                };
+
                 session_manager.register_session(&mut session);
                 BdSocket::handle_connection(&mut session, message_handler.as_ref());
                 session_manager.unregister_session(&session);
@@ -142,7 +149,7 @@ impl BdSocket {
                 match header {
                     0 => {
                         debug!("Ping");
-                        session.write_u32::<LittleEndian>(0)?;
+                        session.send_frame(&0u32.to_le_bytes())?;
                     }
                     BUFFER_SPACE_HEADER => {
                         let available_buffer_size = session.read_u32::<LittleEndian>()?;
