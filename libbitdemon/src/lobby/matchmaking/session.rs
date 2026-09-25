@@ -3,7 +3,7 @@ use crate::networking::bd_session::SessionId;
 use crate::messaging::bd_serialization::BdSerialize;
 use crate::messaging::bd_writer::BdWriter;
 use snafu::{Snafu, ensure};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::sync::Mutex;
 
@@ -247,11 +247,13 @@ impl SessionRegistry {
 
     pub fn list_for(&self, connection: SessionId, query: &SessionQuery) -> Vec<MatchMakingInfo> {
         let state = self.state.lock().unwrap();
+        let mut addresses = HashSet::new();
 
         state
             .sessions
             .iter()
             .filter(|(c, info)| **c != connection && info.matches(query))
+            .filter(|(_, info)| addresses.insert(info.address.clone()))
             .map(|(_, info)| info.clone())
             .take(query.max_results())
             .collect()
@@ -330,7 +332,7 @@ mod tests {
 
     fn advertisement(host: u8, key: u8) -> MatchMakingInfo {
         MatchMakingInfo {
-            address: vec![0u8; ADDRESS_LEN],
+            address: vec![host; ADDRESS_LEN],
             host: vec![host; HOST_LEN],
             key: vec![key; KEY_LEN],
             free_public_slots: 0,
@@ -522,6 +524,16 @@ mod tests {
         registry.create(1, lobby);
 
         assert_eq!(registry.list_for(9, &search(5, 2)).len(), 1);
+    }
+
+    #[test]
+    fn a_search_never_lists_one_address_twice() {
+        let registry = SessionRegistry::new();
+
+        registry.create(1, advertisement(0x01, 0x01));
+        registry.create(2, advertisement(0x01, 0x01));
+
+        assert_eq!(registry.list_for(3, &any()).len(), 1);
     }
 
     #[test]
