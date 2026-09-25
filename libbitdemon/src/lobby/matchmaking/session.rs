@@ -87,6 +87,19 @@ impl MatchMakingInfo {
     pub fn players(&self) -> usize {
         (self.used_public_slots.max(0) + self.used_private_slots.max(0)) as usize
     }
+
+    fn free_slots(&self) -> i32 {
+        self.free_public_slots.max(0) + self.free_private_slots.max(0)
+    }
+
+    fn matches(&self, query: &SessionQuery) -> bool {
+        let wants = |filter: i32, value: i32| filter == ANY || filter == value;
+
+        wants(query.filters[1], self.title_data[1])
+            && wants(query.filters[2], self.title_data[4])
+            && wants(query.filters[4], self.title_data[2])
+            && (query.filters[5] == ANY || self.free_slots() >= query.filters[5])
+    }
 }
 
 impl BdSerialize for MatchMakingInfo {
@@ -206,13 +219,13 @@ impl SessionRegistry {
         self.state.lock().unwrap().forget(connection).is_some()
     }
 
-    pub fn list_for(&self, connection: SessionId) -> Vec<MatchMakingInfo> {
+    pub fn list_for(&self, connection: SessionId, query: &SessionQuery) -> Vec<MatchMakingInfo> {
         let state = self.state.lock().unwrap();
 
         state
             .sessions
             .iter()
-            .filter(|(c, _)| **c != connection)
+            .filter(|(c, info)| **c != connection && info.matches(query))
             .map(|(_, info)| info.clone())
             .collect()
     }
@@ -239,6 +252,8 @@ impl Default for SessionRegistry {
         Self::new()
     }
 }
+
+const ANY: i32 = i32::MAX;
 
 pub struct SessionQuery {
     pub kind: i32,
@@ -301,6 +316,15 @@ mod tests {
         info
     }
 
+    fn any() -> SessionQuery {
+        SessionQuery {
+            kind: 2,
+            limit: 50,
+            filters: [ANY; 6],
+            extra: None,
+        }
+    }
+
     fn counts(population: &Population) -> Vec<(u32, usize)> {
         population.playlists.iter().map(|(k, v)| (*k, *v)).collect()
     }
@@ -360,10 +384,10 @@ mod tests {
         let (id, _) = registry.create(1, advertisement(0xab, 0xcd));
 
         assert!(!registry.delete(2, id.as_slice()));
-        assert_eq!(registry.list_for(2).len(), 1);
+        assert_eq!(registry.list_for(2, &any()).len(), 1);
 
         assert!(registry.delete(1, id.as_slice()));
-        assert_eq!(registry.list_for(2).len(), 0);
+        assert_eq!(registry.list_for(2, &any()).len(), 0);
     }
 
     #[test]
@@ -374,7 +398,7 @@ mod tests {
 
         assert!(registry.remove_connection(1));
         assert!(!registry.remove_connection(1));
-        assert_eq!(registry.list_for(2).len(), 0);
+        assert_eq!(registry.list_for(2, &any()).len(), 0);
     }
 
     #[test]
@@ -384,8 +408,8 @@ mod tests {
         registry.create(1, advertisement(0xab, 0xcd));
         registry.create(2, advertisement(0x12, 0x34));
 
-        assert_eq!(registry.list_for(1).len(), 1);
-        assert_eq!(registry.list_for(1)[0].host, vec![0x12u8; HOST_LEN]);
+        assert_eq!(registry.list_for(1, &any()).len(), 1);
+        assert_eq!(registry.list_for(1, &any())[0].host, vec![0x12u8; HOST_LEN]);
     }
 
     #[test]
@@ -395,7 +419,7 @@ mod tests {
         let (first, _) = registry.create(1, advertisement(0xab, 0xcd));
         assert!(registry.update(1, advertisement(0x99, 0x88)));
 
-        assert_eq!(registry.list_for(2).len(), 1);
+        assert_eq!(registry.list_for(2, &any()).len(), 1);
         assert!(!registry.delete(1, first.as_slice()));
         assert!(registry.delete(1, [0x99u8; ID_LEN].as_slice()));
     }

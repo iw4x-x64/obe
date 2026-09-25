@@ -136,7 +136,7 @@ impl MatchMakingHandler {
 
         let results: Vec<Box<dyn BdSerialize>> = self
             .registry
-            .list_for(session.id)
+            .list_for(session.id, &query)
             .into_iter()
             .map(|info| Box::new(info) as Box<dyn BdSerialize>)
             .collect();
