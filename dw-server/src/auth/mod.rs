@@ -115,10 +115,10 @@ pub async fn handle_auth(
         return error(AUTH_TASK_REPLY, 1, format!("unknown title {title_id}"));
     };
 
-    let (user_id, username) = identify(&headers).unwrap_or_else(|| {
-        warn!("No IW4x identity on the auth request; falling back to a fixed one");
-        (1, String::from("player"))
-    });
+    let Some((user_id, username)) = identify(&headers) else {
+        warn!("Rejecting auth request without an IW4x identity");
+        return error(AUTH_TASK_REPLY, 1, String::from("missing identity"));
+    };
 
     crate::social::note_user(user_id, username.as_str());
 
