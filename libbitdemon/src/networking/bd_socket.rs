@@ -23,6 +23,17 @@ enum BdSocketError {
     IncompleteMessageHeaderError {},
 }
 
+struct Registered<'a> {
+    session: BdSession,
+    session_manager: &'a SessionManager,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.session_manager.unregister_session(&self.session);
+    }
+}
+
 pub trait BdMessageHandler {
     fn handle_message(
         &self,
@@ -77,8 +88,13 @@ impl BdSocket {
                 };
 
                 session_manager.register_session(&mut session);
-                BdSocket::handle_connection(&mut session, message_handler.as_ref());
-                session_manager.unregister_session(&session);
+
+                let mut session = Registered {
+                    session,
+                    session_manager: &session_manager,
+                };
+
+                BdSocket::handle_connection(&mut session.session, message_handler.as_ref());
             });
         }
 
