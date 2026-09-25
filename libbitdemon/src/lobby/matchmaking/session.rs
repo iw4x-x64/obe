@@ -243,7 +243,7 @@ impl Default for SessionRegistry {
 pub struct SessionQuery {
     pub kind: i32,
 
-    pub unrecovered: i32,
+    pub limit: i32,
 
     pub filters: [i32; 6],
 
@@ -253,7 +253,7 @@ pub struct SessionQuery {
 impl SessionQuery {
     pub fn deserialize(reader: &mut BdReader) -> Result<SessionQuery, Box<dyn Error>> {
         let kind = reader.read_i32()?;
-        let unrecovered = reader.read_i32()?;
+        let limit = reader.read_i32()?;
 
         let mut filters = [0i32; 6];
         for filter in filters.iter_mut() {
@@ -268,7 +268,7 @@ impl SessionQuery {
 
         Ok(SessionQuery {
             kind,
-            unrecovered,
+            limit,
             filters,
             extra,
         })
