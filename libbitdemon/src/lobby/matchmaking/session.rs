@@ -169,6 +169,16 @@ impl RegistryState {
 
         self.sessions.insert(connection, info);
     }
+
+    fn mint(&self) -> ([u8; ID_LEN], [u8; SECRET_LEN]) {
+        loop {
+            let id: [u8; ID_LEN] = rand::random();
+
+            if !self.by_host.contains_key(&id) {
+                return (id, rand::random());
+            }
+        }
+    }
 }
 
 impl SessionRegistry {
@@ -181,21 +191,37 @@ impl SessionRegistry {
     pub fn create(
         &self,
         connection: SessionId,
-        info: MatchMakingInfo,
+        mut info: MatchMakingInfo,
     ) -> ([u8; ID_LEN], [u8; SECRET_LEN]) {
-        let id = <[u8; ID_LEN]>::try_from(info.host.as_slice()).unwrap_or([0u8; ID_LEN]);
-        let secret = <[u8; SECRET_LEN]>::try_from(info.key.as_slice()).unwrap_or([0u8; SECRET_LEN]);
-
         let mut state = self.state.lock().unwrap();
         state.forget(connection);
+
+        let (id, secret) = state.mint();
+        info.host = id.to_vec();
+        info.key = secret.to_vec();
+
         state.remember(connection, info);
 
         (id, secret)
     }
 
-    pub fn update(&self, connection: SessionId, info: MatchMakingInfo) -> bool {
+    pub fn update(&self, connection: SessionId, mut info: MatchMakingInfo) -> bool {
         let mut state = self.state.lock().unwrap();
-        let had = state.forget(connection).is_some();
+
+        let had = match state.forget(connection) {
+            Some(old) => {
+                info.host = old.host;
+                info.key = old.key;
+                true
+            }
+            None => {
+                let (id, secret) = state.mint();
+                info.host = id.to_vec();
+                info.key = secret.to_vec();
+                false
+            }
+        };
+
         state.remember(connection, info);
 
         had
@@ -391,13 +417,20 @@ mod tests {
     }
 
     #[test]
-    fn create_names_the_session_by_what_the_client_advertised() {
+    fn create_mints_a_session_rather_than_echoing_the_advertisement() {
         let registry = SessionRegistry::new();
 
-        let (id, secret) = registry.create(7, advertisement(0xab, 0xcd));
+        let (first, first_secret) = registry.create(1, advertisement(0x01, 0x01));
+        let (second, second_secret) = registry.create(2, advertisement(0x01, 0x01));
 
-        assert_eq!(id, [0xabu8; ID_LEN]);
-        assert_eq!(secret, [0xcdu8; SECRET_LEN]);
+        assert_ne!(first, [0x01u8; ID_LEN]);
+        assert_ne!(first_secret, [0x01u8; SECRET_LEN]);
+        assert_ne!(first, second);
+        assert_ne!(first_secret, second_secret);
+
+        let found = registry.list_for(2, &any());
+        assert_eq!(found[0].host, first.to_vec());
+        assert_eq!(found[0].key, first_secret.to_vec());
     }
 
     #[test]
@@ -428,23 +461,28 @@ mod tests {
     fn a_client_is_never_shown_its_own_session() {
         let registry = SessionRegistry::new();
 
-        registry.create(1, advertisement(0xab, 0xcd));
-        registry.create(2, advertisement(0x12, 0x34));
+        registry.create(1, advertisement(0x01, 0x01));
+        let (other, _) = registry.create(2, advertisement(0x01, 0x01));
 
         assert_eq!(registry.list_for(1, &any()).len(), 1);
-        assert_eq!(registry.list_for(1, &any())[0].host, vec![0x12u8; HOST_LEN]);
+        assert_eq!(registry.list_for(1, &any())[0].host, other.to_vec());
     }
 
     #[test]
     fn re_advertising_replaces_rather_than_accumulates() {
         let registry = SessionRegistry::new();
 
-        let (first, _) = registry.create(1, advertisement(0xab, 0xcd));
-        assert!(registry.update(1, advertisement(0x99, 0x88)));
+        let (id, secret) = registry.create(1, advertisement(0x01, 0x01));
+        assert!(registry.update(1, lobby(0x01, 5, 3, 0)));
 
-        assert_eq!(registry.list_for(2, &any()).len(), 1);
-        assert!(!registry.delete(1, first.as_slice()));
-        assert!(registry.delete(1, [0x99u8; ID_LEN].as_slice()));
+        let found = registry.list_for(2, &any());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].players(), 3);
+        assert_eq!(found[0].host, id.to_vec());
+        assert_eq!(found[0].key, secret.to_vec());
+
+        assert!(registry.delete(1, id.as_slice()));
+        assert_eq!(registry.list_for(2, &any()).len(), 0);
     }
 
     #[test]
@@ -470,7 +508,9 @@ mod tests {
         let found = registry.list_for(9, &search(5, 2));
 
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].host, vec![1u8; HOST_LEN]);
+        assert_eq!(found[0].title_data[1], 5);
+        assert_eq!(found[0].title_data[2], 3);
+        assert_eq!(found[0].title_data[4], 142);
     }
 
     #[test]
