@@ -227,6 +227,7 @@ impl SessionRegistry {
             .iter()
             .filter(|(c, info)| **c != connection && info.matches(query))
             .map(|(_, info)| info.clone())
+            .take(query.max_results())
             .collect()
     }
 
@@ -266,6 +267,13 @@ pub struct SessionQuery {
 }
 
 impl SessionQuery {
+    fn max_results(&self) -> usize {
+        match usize::try_from(self.limit) {
+            Ok(limit) if limit > 0 => limit,
+            _ => usize::MAX,
+        }
+    }
+
     pub fn deserialize(reader: &mut BdReader) -> Result<SessionQuery, Box<dyn Error>> {
         let kind = reader.read_i32()?;
         let limit = reader.read_i32()?;
