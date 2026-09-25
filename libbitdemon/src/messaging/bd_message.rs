@@ -12,15 +12,23 @@ pub struct BdMessage {
 enum BdMessageError {
     #[snafu(display("Received encrypted message but no session key was set"))]
     NoSessionKeyError,
+    #[snafu(display("Message is {len} bytes, too short for its framing"))]
+    TruncatedMessageError { len: usize },
     #[snafu(display("Message Hmac mismatch, expected={expected} actual={actual}"))]
     InvalidHmacError { expected: u32, actual: u32 },
 }
 
 impl BdMessage {
     pub fn new(session: &BdSession, mut buf: Vec<u8>) -> Result<Self, Box<dyn Error>> {
-        let encrypted = buf.first().unwrap();
-        if *encrypted == 1 {
+        let len = buf.len();
+        let Some(&encrypted) = buf.first() else {
+            return TruncatedMessageSnafu { len }.fail()?;
+        };
+
+        if encrypted == 1 {
             ensure!(session.authentication().is_some(), NoSessionKeySnafu {});
+            ensure!(len >= 10, TruncatedMessageSnafu { len });
+
             let seed = u32::from_le_bytes(buf[1..5].try_into().unwrap());
 
             let iv = generate_iv_from_seed(seed);
