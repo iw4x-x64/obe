@@ -14,7 +14,6 @@ use bitdemon::auth::auth_server::AuthServer;
 use bitdemon::auth::key_store::InMemoryKeyStore;
 use bitdemon::lobby::LobbyServer;
 use bitdemon::networking::bd_socket::BdSocket;
-use bitdemon::networking::nat::NatServer;
 use bitdemon::networking::session_manager::SessionManager;
 use axum::Router;
 use axum::routing::post;
@@ -70,14 +69,6 @@ async fn main() {
     );
 
     let lobby_router = lobby_router.merge(crate::social::router());
-
-    match config.public_ip() {
-        Some(public_ip) => match NatServer::bind(public_ip) {
-            Ok(nat) => Arc::new(nat).run(),
-            Err(e) => error!("No NAT endpoint ({e}); strict NAT peers will be unreachable"),
-        },
-        None => error!("No public IPv4 address configured; no NAT endpoint"),
-    }
 
     let auth_join = auth_socket.run_async(auth_server);
     let lobby_join = lobby_socket.run_async(lobby_server);
