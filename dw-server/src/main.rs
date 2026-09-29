@@ -3,6 +3,7 @@ mod config;
 mod lobby;
 mod log;
 mod population;
+mod recording;
 mod social;
 
 use crate::auth::{AuthState, handle_auth};
@@ -69,6 +70,8 @@ async fn main() {
     );
 
     let lobby_router = lobby_router.merge(crate::social::router());
+
+    let lobby_router = lobby_router.merge(crate::recording::router());
 
     let auth_join = auth_socket.run_async(auth_server);
     let lobby_join = lobby_socket.run_async(lobby_server);
