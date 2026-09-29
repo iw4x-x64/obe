@@ -11,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 
 const DIRECTORY: &str = "recordings";
 const MAGIC: &[u8] = b"IW4XREC\0";
-const MAX_BYTES: u64 = 256 << 20;
+const MAX_BYTES: u64 = 512 << 20;
 
 pub fn router() -> Router {
     Router::new().route("/v1/recordings", post(upload))
