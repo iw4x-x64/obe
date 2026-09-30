@@ -9,9 +9,14 @@ use std::io::{ErrorKind, Read};
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use std::{io, thread};
 
 const MAX_MESSAGE_SIZE: u32 = 0x4000000;
+
+const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 const BUFFER_SPACE_HEADER: u32 = 180;
 
@@ -45,6 +50,7 @@ pub trait BdMessageHandler {
 pub struct BdSocket {
     session_manager: Arc<SessionManager>,
     listener: Option<TcpListener>,
+    idle_timeout: Duration,
 }
 
 impl BdSocket {
@@ -65,13 +71,24 @@ impl BdSocket {
         Ok(BdSocket {
             listener: Some(listener),
             session_manager,
+            idle_timeout: IDLE_TIMEOUT,
         })
+    }
+
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> BdSocket {
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
+    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+        self.listener.as_ref().unwrap().local_addr()
     }
 
     fn listen(
         listener: &TcpListener,
         session_manager: &Arc<SessionManager>,
         message_handler: Arc<dyn BdMessageHandler + Send + Sync>,
+        idle_timeout: Duration,
     ) -> Result<(), io::Error> {
         for stream in listener.incoming() {
             let stream = stream?;
@@ -79,6 +96,14 @@ impl BdSocket {
             let session_manager = Arc::clone(session_manager);
             let message_handler = Arc::clone(&message_handler);
             thread::spawn(move || {
+                if let Err(e) = stream
+                    .set_read_timeout(Some(idle_timeout))
+                    .and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT)))
+                {
+                    error!("Could not set socket timeouts: {e}");
+                    return;
+                }
+
                 let mut session = match BdSession::new(stream) {
                     Ok(session) => session,
                     Err(e) => {
@@ -109,6 +134,7 @@ impl BdSocket {
             self.listener.as_ref().unwrap(),
             &self.session_manager,
             message_handler,
+            self.idle_timeout,
         )
     }
 
@@ -119,12 +145,14 @@ impl BdSocket {
         let message_handler = Arc::clone(&message_handler);
         let listener = self.listener.take();
         let session_manager = self.session_manager.clone();
+        let idle_timeout = self.idle_timeout;
         thread::spawn(move || -> Result<(), io::Error> {
             let session_manager = session_manager;
             Self::listen(
                 listener.as_ref().unwrap(),
                 &session_manager,
                 message_handler,
+                idle_timeout,
             )
         })
     }
@@ -193,11 +221,67 @@ impl BdSocket {
             if let Some(e0) = e.downcast_ref::<io::Error>() {
                 match e0.kind() {
                     ErrorKind::Interrupted | ErrorKind::ConnectionReset => {}
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                        info!("Connection went silent; closing")
+                    }
                     _ => error!("Connection terminated: {}: {e}", e0.kind()),
                 }
             } else {
                 error!("Session terminated with error: {e}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    struct Ignore;
+
+    impl BdMessageHandler for Ignore {
+        fn handle_message(&self, _: &mut BdSession, _: BdMessage) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+    }
+
+    fn listening(idle_timeout: Duration) -> (TcpStream, mpsc::Receiver<()>) {
+        let session_manager = Arc::new(SessionManager::new());
+        let (ended, on_end) = mpsc::channel();
+        session_manager.on_session_unregistered(move |_| {
+            let _ = ended.send(());
+        });
+
+        let mut socket = BdSocket::new_with_session_manager(0, session_manager)
+            .unwrap()
+            .with_idle_timeout(idle_timeout);
+        let port = socket.local_addr().unwrap().port();
+        socket.run_async(Arc::new(Ignore));
+
+        (TcpStream::connect(("127.0.0.1", port)).unwrap(), on_end)
+    }
+
+    #[test]
+    fn a_silent_connection_is_dropped() {
+        let (_client, on_end) = listening(Duration::from_millis(200));
+
+        assert!(on_end.recv_timeout(Duration::from_secs(5)).is_ok());
+    }
+
+    #[test]
+    fn keepalives_hold_a_connection_open() {
+        let (mut client, on_end) = listening(Duration::from_millis(300));
+
+        let until = Instant::now() + Duration::from_millis(900);
+        while Instant::now() < until {
+            client.write_all(&0u32.to_le_bytes()).unwrap();
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert!(on_end.try_recv().is_err());
     }
 }
