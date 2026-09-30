@@ -1,12 +1,12 @@
 ﻿use bitdemon::lobby::rich_presence::{RichPresenceService, RichPresenceServiceError};
-use bitdemon::networking::bd_session::BdSession;
+use bitdemon::networking::bd_session::{BdSession, SessionId};
 use bitdemon::networking::session_manager::SessionManager;
 use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub struct DwRichPresenceService {
-    rich_presences: RwLock<HashMap<u64, Vec<u8>>>,
+    rich_presences: RwLock<HashMap<u64, (SessionId, Vec<u8>)>>,
 }
 
 const MAX_RICH_PRESENCE_SIZE: usize = 1_024; // 1KiB
@@ -35,7 +35,7 @@ impl RichPresenceService for DwRichPresenceService {
         }
 
         let mut rich_presences = self.rich_presences.write().unwrap();
-        rich_presences.insert(user_id, rich_presence_data);
+        rich_presences.insert(user_id, (session.id, rich_presence_data));
 
         Ok(())
     }
@@ -56,7 +56,7 @@ impl RichPresenceService for DwRichPresenceService {
 
         let rich_presences = self.rich_presences.read().unwrap();
         for user in users {
-            result.push(rich_presences.get(user).cloned());
+            result.push(rich_presences.get(user).map(|(_, data)| data.clone()));
         }
 
         Ok(result)
@@ -80,14 +80,15 @@ impl DwRichPresenceService {
     ) {
         session_manager.on_session_unregistered(move |session| {
             if let Some(authentication) = session.authentication() {
-                service.remove_rich_presence_for_disconnect(authentication.user_id);
+                service.remove_rich_presence_for_disconnect(authentication.user_id, session.id);
             }
         });
     }
 
-    fn remove_rich_presence_for_disconnect(&self, user_id: u64) {
+    fn remove_rich_presence_for_disconnect(&self, user_id: u64, session_id: SessionId) {
         let mut rich_presences = self.rich_presences.write().unwrap();
-        if rich_presences.remove(&user_id).is_some() {
+        if rich_presences.get(&user_id).map(|(owner, _)| *owner) == Some(session_id) {
+            rich_presences.remove(&user_id);
             info!("Removed rich presence for user {user_id} due to disconnect",);
         }
     }
