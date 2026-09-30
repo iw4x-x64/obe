@@ -23,3 +23,4 @@ log.workspace = true
 num-derive.workspace = true
 num-traits.workspace = true
 rand.workspace = true
+zstd = "0.14"
