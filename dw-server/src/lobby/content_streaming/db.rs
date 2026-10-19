@@ -1,17 +1,15 @@
 ﻿use bitdemon::domain::title::Title;
 use bitdemon::lobby::content_streaming::{CategoryId, StreamSlot, StreamTag};
 use chrono::Utc;
+use crate::db::Db;
 use log::info;
 use num_traits::ToPrimitive;
 use rusqlite::types::Value;
 use rusqlite::{Connection, DropBehavior, Row};
-use std::cell::RefCell;
 use std::fs::create_dir_all;
 use std::rc::Rc;
 
-thread_local! {
-    pub static CONTENT_STREAMING_DB: RefCell<Connection> = RefCell::new(initialized_db());
-}
+pub static CONTENT_STREAMING_DB: Db = Db::new(initialized_db);
 
 const CONTENT_STREAMING_CHANGELOG_0: &str = "
 CREATE TABLE user_stream (

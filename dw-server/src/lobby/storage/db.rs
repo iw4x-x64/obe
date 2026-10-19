@@ -1,14 +1,12 @@
 ﻿use bitdemon::domain::title::Title;
 use bitdemon::lobby::storage::FileVisibility;
+use crate::db::Db;
 use log::info;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rusqlite::Connection;
-use std::cell::RefCell;
 use std::fs::create_dir_all;
 
-thread_local! {
-    pub static STORAGE_DB: RefCell<Connection> = RefCell::new(initialized_db());
-}
+pub static STORAGE_DB: Db = Db::new(initialized_db);
 
 fn initialized_db() -> Connection {
     create_dir_all("db").expect("to be able to create dir");

@@ -1,11 +1,9 @@
-﻿use log::info;
+﻿use crate::db::Db;
+use log::info;
 use rusqlite::Connection;
-use std::cell::RefCell;
 use std::fs::create_dir_all;
 
-thread_local! {
-    pub static PROFILE_DB: RefCell<Connection> = RefCell::new(initialized_db());
-}
+pub static PROFILE_DB: Db = Db::new(initialized_db);
 
 fn initialized_db() -> Connection {
     create_dir_all("db").expect("to be able to create dir");

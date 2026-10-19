@@ -9,6 +9,8 @@ mod publisher_file;
 mod user_file;
 
 pub fn create_storage_handler() -> Arc<ThreadSafeLobbyHandler> {
+    db::STORAGE_DB.open();
+
     Arc::new(StorageHandler::new(
         Arc::new(DwUserStorageService::new()),
         Arc::new(DwPublisherStorageService::new()),

@@ -600,6 +600,8 @@ async fn join(Json(body): Json<FriendAction>) -> Response {
 }
 
 pub fn router() -> Router {
+    crate::social::db::SOCIAL_DB.open();
+
     watch::spawn_sweeper();
 
     Router::new()

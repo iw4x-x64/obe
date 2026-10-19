@@ -13,6 +13,8 @@ mod publisher_file;
 mod user_file;
 
 pub fn create_content_streaming_handler(config: &DwServerConfig) -> ConfiguredEnvironment {
+    db::CONTENT_STREAMING_DB.open();
+
     let user_service = Arc::new(DwUserContentStreamingService::new(config));
     let publisher_service = Arc::new(DwPublisherContentStreamingService::new(config));
 

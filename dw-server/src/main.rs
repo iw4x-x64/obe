@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod db;
 mod lobby;
 mod log;
 mod population;
